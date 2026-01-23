@@ -7,6 +7,52 @@ static int mini_strcmp(const char* a, const char* b) {
     return a[i] - b[i];
 }
 
+// Forward declaration for print_string
+static void print_string(const char* str, int len, char* video, int* cursor, unsigned char color);
+static void print_string_sameline(const char* str, int len, char* video, int* cursor, unsigned char color);
+
+// Read a byte from CMOS register
+static unsigned char cmos_read(unsigned char reg) {
+    unsigned char value;
+    asm volatile ("outb %0, %1" : : "a"(reg), "Nd"((unsigned short)0x70));
+    asm volatile ("inb %1, %0" : "=a"(value) : "Nd"((unsigned short)0x71));
+    return value;
+}
+
+// Convert BCD to binary
+static unsigned char bcd_to_bin(unsigned char bcd) {
+    return ((bcd >> 4) * 10) + (bcd & 0x0F);
+}
+
+// Get time string from CMOS (format: HH:MM:SS) and write to buf (must be at least 9 bytes)
+static void get_time_string(char* buf) {
+    unsigned char hour = cmos_read(0x04);
+    unsigned char min  = cmos_read(0x02);
+    unsigned char sec  = cmos_read(0x00);
+    // Convert from BCD if needed (most BIOSes use BCD)
+    hour = bcd_to_bin(hour);
+    min  = bcd_to_bin(min);
+    sec  = bcd_to_bin(sec);
+    buf[0] = '0' + (hour / 10);
+    buf[1] = '0' + (hour % 10);
+    buf[2] = ':';
+    buf[3] = '0' + (min / 10);
+    buf[4] = '0' + (min % 10);
+    buf[5] = ':';
+    buf[6] = '0' + (sec / 10);
+    buf[7] = '0' + (sec % 10);
+    buf[8] = 0;
+}
+
+// Handle the 'time' command
+static void handle_time_command(char* video, int* cursor, unsigned char color) {
+    char timebuf[9];
+    get_time_string(timebuf);
+    print_string(timebuf, 8, video, cursor, color);
+    print_string_sameline(" UTC", 4, video, cursor, color);
+}
+
+//for basic call and reply commands
 static void handle_command(const char* cmd, char* video, int* cursor, const char* input, const char* output, unsigned char color) {
     if (mini_strcmp(cmd, input) == 0) {
         *cursor = ((*cursor / 80) + 1) * 80;
@@ -20,7 +66,20 @@ static void handle_command(const char* cmd, char* video, int* cursor, const char
         }
     }
 }
-// Print a string to the screen at the current cursor, with color
+
+// Main command dispatcher
+static void dispatch_command(const char* cmd, char* video, int* cursor) {
+    if (mini_strcmp(cmd, "ping") == 0) {
+        handle_command(cmd, video, cursor, "ping", "pong", 0x0A);
+    } else if (mini_strcmp(cmd, "help") == 0) {
+        handle_command(cmd, video, cursor, "help", "Lock in brutha", 0x0A);
+    } else if (mini_strcmp(cmd, "about") == 0) {
+        handle_command(cmd, video, cursor, "about", "Smiggles v1.0.0 \n Jules Miller and Vajra Vanukuri", 0x0A);
+    } else if (mini_strcmp(cmd, "time") == 0) {
+        handle_time_command(video, cursor, 0x0A);
+    }
+}
+//print a string on NEW LINE with color
 static void print_string(const char* str, int len, char* video, int* cursor, unsigned char color) {
     *cursor = ((*cursor / 80) + 1) * 80;
     for (int i = 0; i < len && *cursor < 80*25 - 1; i++) {
@@ -29,6 +88,16 @@ static void print_string(const char* str, int len, char* video, int* cursor, uns
         (*cursor)++;
     }
 }
+
+//print string on SAME LINE with color
+static void print_string_sameline(const char* str, int len, char* video, int* cursor, unsigned char color) {
+    for (int i = 0; i < len && *cursor < 80*25 - 1; i++) {
+        video[(*cursor)*2] = str[i];
+        video[(*cursor)*2+1] = color;
+        (*cursor)++;
+    }
+}
+
 
 
 
@@ -47,7 +116,7 @@ void kernel_main(void) {
     }
 
     //introductory message
-    const char* smiggles_art[8] = {
+    const char* smiggles_art[7] = {
         " _______  __   __  ___   _______  _______  ___      _______  _______ ",
         "|       ||  |_|  ||   | |       ||       ||   |    |       ||       |",
         "|  _____||       ||   | |    ___||    ___||   |    |    ___||  _____|",
@@ -58,8 +127,8 @@ void kernel_main(void) {
     
     };
     //yellow
-    unsigned char rainbow[8] = {0x0E, 0x0E, 0x0E, 0x0E, 0x0E, 0x0E, 0x0E, 0x0E};
-    int art_lines = 8;
+    unsigned char rainbow[7] = {0x0E, 0x0E, 0x0E, 0x0E, 0x0E, 0x0E, 0x0E};
+    int art_lines = 7;
     for (int l = 0; l < art_lines; l++) {
         for (int j = 0; smiggles_art[l][j] && j < 80; j++) {
             video[(l*80+j)*2] = smiggles_art[l][j];
@@ -95,7 +164,7 @@ void kernel_main(void) {
         unsigned char scancode;
         asm volatile("inb $0x60, %0" : "=a"(scancode));
 
-        //SHIFT KE
+        //SHIFT KEYS
         if (scancode == 0x2A || scancode == 0x36) { 
             shift = 1;
             continue;
@@ -151,7 +220,6 @@ void kernel_main(void) {
                 if (c == '\n') {
                     // Null-terminate and check command
                     cmd_buf[cmd_len] = 0;
-                    handle_command(cmd_buf, video, &cursor, "ping", "pong", 0x0A);
                     // Print command: print "text"
                     if (cmd_buf[0] == 'p' && cmd_buf[1] == 'r' && cmd_buf[2] == 'i' && cmd_buf[3] == 'n' && cmd_buf[4] == 't' && cmd_buf[5] == ' ' && cmd_buf[6] == '"') {
                         // Find closing quote
@@ -163,9 +231,9 @@ void kernel_main(void) {
                             // Move cursor to new line before printing
                             print_string(&cmd_buf[start], end - start, video, &cursor, 0x0D);
                         }
+                    } else {
+                        dispatch_command(cmd_buf, video, &cursor);
                     }
-                    handle_command(cmd_buf, video, &cursor, "help", "Lock in brutha", 0x0A);
-                    handle_command(cmd_buf, video, &cursor, "about", "Smiggles v1.0.0 \n Jules Miller and Vajra Vanukuri", 0x0A);
                     // New prompt
                     cursor = ((cursor / 80) + 1) * 80;
                     const char* prompt = "> ";
