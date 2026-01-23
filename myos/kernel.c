@@ -20,6 +20,17 @@ static void handle_command(const char* cmd, char* video, int* cursor, const char
         }
     }
 }
+// Print a string to the screen at the current cursor, with color
+static void print_string(const char* str, int len, char* video, int* cursor, unsigned char color) {
+    *cursor = ((*cursor / 80) + 1) * 80;
+    for (int i = 0; i < len && *cursor < 80*25 - 1; i++) {
+        video[(*cursor)*2] = str[i];
+        video[(*cursor)*2+1] = color;
+        (*cursor)++;
+    }
+}
+
+
 
 void kernel_main(void) {
     char* video = (char*)0xB8000;
@@ -141,6 +152,18 @@ void kernel_main(void) {
                     // Null-terminate and check command
                     cmd_buf[cmd_len] = 0;
                     handle_command(cmd_buf, video, &cursor, "ping", "pong", 0x0A);
+                    // Print command: print "text"
+                    if (cmd_buf[0] == 'p' && cmd_buf[1] == 'r' && cmd_buf[2] == 'i' && cmd_buf[3] == 'n' && cmd_buf[4] == 't' && cmd_buf[5] == ' ' && cmd_buf[6] == '"') {
+                        // Find closing quote
+                        int start = 7;
+                        int end = start;
+                        while (cmd_buf[end] && cmd_buf[end] != '"') end++;
+                        if (cmd_buf[end] == '"') {
+                            // Print the string between quotes
+                            // Move cursor to new line before printing
+                            print_string(&cmd_buf[start], end - start, video, &cursor, 0x0D);
+                        }
+                    }
                     handle_command(cmd_buf, video, &cursor, "help", "Lock in brutha", 0x0A);
                     handle_command(cmd_buf, video, &cursor, "about", "Smiggles v1.0.0 \n Jules Miller and Vajra Vanukuri", 0x0A);
                     // New prompt
@@ -188,5 +211,4 @@ void kernel_main(void) {
         }
     }
 }
-
 
