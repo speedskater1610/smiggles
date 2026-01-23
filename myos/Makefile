@@ -1,3 +1,4 @@
+#Note. Remember to copy the powershell before cloning this repo so you can comment out truncate and replace it with powershell.
 ASM=nasm
 CC=i686-elf-gcc
 LD=i686-elf-ld
