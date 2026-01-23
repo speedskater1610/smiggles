@@ -1,3 +1,83 @@
+// --- RAM-based file system ---
+#define MAX_FILES 8
+#define MAX_FILE_NAME 16
+#define MAX_FILE_SIZE 128
+
+// Forward declaration for print_string and print_string_sameline
+static void print_string(const char* str, int len, char* video, int* cursor, unsigned char color);
+static void print_string_sameline(const char* str, int len, char* video, int* cursor, unsigned char color);
+
+
+typedef struct {
+    char name[MAX_FILE_NAME];
+    char data[MAX_FILE_SIZE];
+    int size;
+} RamFile;
+
+static RamFile file_table[MAX_FILES];
+static int file_count = 0;
+
+// Find file index by name, or -1 if not found
+static int find_file(const char* name) {
+    // Skip leading spaces in name
+    int nstart = 0;
+    while (name[nstart] == ' ') nstart++;
+    for (int i = 0; i < file_count; i++) {
+        int j = 0;
+        // Compare until either string ends or a space is found in name
+        while (name[nstart + j] && file_table[i].name[j] && name[nstart + j] == file_table[i].name[j]) j++;
+        // Accept match if both end or if name ends with space
+        if ((!name[nstart + j] || name[nstart + j] == ' ') && !file_table[i].name[j]) return i;
+    }
+    return -1;
+}
+
+// List files (ls command)
+static void handle_ls_command(char* video, int* cursor, unsigned char color) {
+    if (file_count == 0) {
+        print_string("No files", 8, video, cursor, color);
+        return;
+    }
+    for (int i = 0; i < file_count; i++) {
+        print_string(file_table[i].name, MAX_FILE_NAME, video, cursor, color);
+    }
+}
+
+// Show file contents (cat command)
+static void handle_cat_command(const char* filename, char* video, int* cursor, unsigned char color) {
+    int idx = find_file(filename);
+    if (idx == -1) {
+        print_string("File not found", 14, video, cursor, color);
+        return;
+    }
+    print_string(file_table[idx].data, file_table[idx].size, video, cursor, color);
+}
+
+// Write to file (echo command)
+static void handle_echo_command(const char* text, const char* filename, char* video, int* cursor, unsigned char color) {
+    int idx = find_file(filename);
+    if (idx == -1) {
+        if (file_count >= MAX_FILES) {
+            print_string("File table full", 15, video, cursor, color);
+            return;
+        }
+        idx = file_count++;
+        int j = 0;
+        while (filename[j] && j < MAX_FILE_NAME-1) {
+            file_table[idx].name[j] = filename[j];
+            j++;
+        }
+        file_table[idx].name[j] = 0;
+    }
+    int len = 0;
+    while (text[len] && len < MAX_FILE_SIZE-1) {
+        file_table[idx].data[len] = text[len];
+        len++;
+    }
+    file_table[idx].data[len] = 0;
+    file_table[idx].size = len;
+    print_string("OK", 2, video, cursor, color);
+}
 static int mini_strcmp(const char* a, const char* b) {
     int i = 0;
     while (a[i] && b[i]) {
@@ -55,46 +135,125 @@ static void handle_time_command(char* video, int* cursor, unsigned char color) {
 //for basic call and reply commands
 static void handle_command(const char* cmd, char* video, int* cursor, const char* input, const char* output, unsigned char color) {
     if (mini_strcmp(cmd, input) == 0) {
-        *cursor = ((*cursor / 80) + 1) * 80;
-        const char* out = output;
-        int k = 0;
-        while (out[k] && *cursor < 80*25 - 1) {
-            video[(*cursor)*2] = out[k];
-            video[(*cursor)*2+1] = color;
-            (*cursor)++;
-            k++;
-        }
+        print_string(output, -1, video, cursor, color);
+
     }
 }
 
-// Main command dispatcher
+
+//main command dispatcher
 static void dispatch_command(const char* cmd, char* video, int* cursor) {
     if (mini_strcmp(cmd, "ping") == 0) {
         handle_command(cmd, video, cursor, "ping", "pong", 0x0A);
-    } else if (mini_strcmp(cmd, "help") == 0) {
-        handle_command(cmd, video, cursor, "help", "Lock in brutha", 0x0A);
     } else if (mini_strcmp(cmd, "about") == 0) {
-        handle_command(cmd, video, cursor, "about", "Smiggles v1.0.0 \n Jules Miller and Vajra Vanukuri", 0x0A);
+        handle_command(cmd, video, cursor, "about", "Smiggles v1.0.0\nJules Miller and Vajra Vanukuri", 0x0A);
+    } else if (mini_strcmp(cmd, "help") == 0) {
+        handle_command(cmd, video, cursor, "help", "Available commands:\nprint \"text\" (prints text)  \necho \"text\" > file.txt (creates file)  \nls (view all files)\ncat file.txt (read contents of file)\ntime (displays time in UTC)", 0x0A);
     } else if (mini_strcmp(cmd, "time") == 0) {
         handle_time_command(video, cursor, 0x0A);
+    } else if (mini_strcmp(cmd, "ls") == 0) {
+        handle_ls_command(video, cursor, 0x0B);
+    } else if (cmd[0] == 'c' && cmd[1] == 'a' && cmd[2] == 't' && cmd[3] == ' ') {
+        //handling stupid spaces
+        int start = 4;
+        while (cmd[start] == ' ') start++;
+        char filename[MAX_FILE_NAME];
+        int fn = 0;
+        while (cmd[start]) {
+            if (cmd[start] != ' ' && fn < MAX_FILE_NAME-1) filename[fn++] = cmd[start];
+            start++;
+        }
+        filename[fn] = 0;
+        handle_cat_command(filename, video, cursor, 0x0E);
+    } else if (cmd[0] == 'e' && cmd[1] == 'c' && cmd[2] == 'h' && cmd[3] == 'o' && cmd[4] == ' ') {
+        //format: echo "text" > filename
+        int quote_start = 5;
+        while (cmd[quote_start] == ' ') quote_start++;
+        if (cmd[quote_start] != '"') {
+            print_string("Bad echo syntax", 16, video, cursor, 0x0C);
+            return;
+        }
+        int quote_end = quote_start + 1;
+        while (cmd[quote_end] && cmd[quote_end] != '"') quote_end++;
+        if (cmd[quote_end] != '"') {
+            print_string("Bad echo syntax", 16, video, cursor, 0x0C);
+            return;
+        }
+        
+        int gt = quote_end + 1;
+        while (cmd[gt] && cmd[gt] != '>') gt++;
+        if (cmd[gt] != '>') {
+            print_string("Bad echo syntax", 16, video, cursor, 0x0C);
+            return;
+        }
+        int text_len = quote_end - (quote_start + 1);
+        char text[MAX_FILE_SIZE];
+        for (int i = 0; i < text_len && i < MAX_FILE_SIZE-1; i++) text[i] = cmd[quote_start + 1 + i];
+        text[text_len] = 0;
+        //strip spaces
+        char filename[MAX_FILE_NAME];
+        int fn = 0;
+        int fi = gt + 1;
+        while (cmd[fi]) {
+            if (cmd[fi] != ' ' && fn < MAX_FILE_NAME-1) filename[fn++] = cmd[fi];
+            fi++;
+        }
+        filename[fn] = 0;
+        handle_echo_command(text, filename, video, cursor, 0x0A);
     }
 }
 //print a string on NEW LINE with color
 static void print_string(const char* str, int len, char* video, int* cursor, unsigned char color) {
-    *cursor = ((*cursor / 80) + 1) * 80;
-    for (int i = 0; i < len && *cursor < 80*25 - 1; i++) {
+    *cursor = ((*cursor / 80) + 1) * 80; //this is what goes to the new line
+    // If len < 0, auto-calculate string length
+    if (len < 0) {
+        len = 0;
+        while (str[len]) len++;
+    }
+    for (int i = 0; i < len && *cursor < 80*25 - 1; ) {
+        // Handle "\\n" (two-character sequence)
+        if (str[i] == '\\' && (i+1 < len) && str[i+1] == 'n') {
+            *cursor = ((*cursor / 80) + 1) * 80;
+            i += 2;
+            continue;
+        }
+        // Handle actual newline character (char 10)
+        if (str[i] == '\n' || str[i] == 10) {
+            *cursor = ((*cursor / 80) + 1) * 80;
+            i++;
+            continue;
+        }
         video[(*cursor)*2] = str[i];
         video[(*cursor)*2+1] = color;
         (*cursor)++;
+        i++;
     }
 }
 
 //print string on SAME LINE with color
 static void print_string_sameline(const char* str, int len, char* video, int* cursor, unsigned char color) {
-    for (int i = 0; i < len && *cursor < 80*25 - 1; i++) {
+    // If len < 0, auto-calculate string length
+    if (len < 0) {
+        len = 0;
+        while (str[len]) len++;
+    }
+    for (int i = 0; i < len && *cursor < 80*25 - 1; ) {
+        // Handle "\\n" (two-character sequence)
+        if (str[i] == '\\' && (i+1 < len) && str[i+1] == 'n') {
+            *cursor = ((*cursor / 80) + 1) * 80;
+            i += 2;
+            continue;
+        }
+        // Handle actual newline character (char 10)
+        if (str[i] == '\n' || str[i] == 10) {
+            *cursor = ((*cursor / 80) + 1) * 80;
+            i++;
+            continue;
+        }
         video[(*cursor)*2] = str[i];
         video[(*cursor)*2+1] = color;
         (*cursor)++;
+        i++;
     }
 }
 
