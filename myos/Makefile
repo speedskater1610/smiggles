@@ -19,7 +19,10 @@ kernel.bin: kernel_entry.o kernel.o
 
 floppy.img: boot.bin kernel.bin
 	cat boot.bin kernel.bin > floppy.img
-	truncate -s 1474560 floppy.img
+	# truncate -s 1474560 floppy.img
+	@if exist floppy.img (\
+      powershell -Command "& { $f = 'floppy.img'; $size = 1474560; $fs = [System.IO.File]::Open($f, 'OpenOrCreate', 'ReadWrite'); $fs.SetLength($size); $fs.Close() }" \
+    )
 
 run: floppy.img
 	$(QEMU) -fda floppy.img

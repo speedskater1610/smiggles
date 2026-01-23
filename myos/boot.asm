@@ -24,7 +24,7 @@ load_kernel:
     int 0x13
     
     mov ah, 0x02
-    mov al, 4              ; 4 sectors = 2048 bytes
+    mov al, 16             ; 16 sectors = 8192 bytes
     mov ch, 0
     mov cl, 2
     mov dh, 0
