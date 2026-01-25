@@ -1,3 +1,60 @@
+#include <stdint.h>
+// --- Interrupts and IDT ---
+#define PIC1_COMMAND 0x20
+#define PIC1_DATA    0x21
+#define PIC2_COMMAND 0xA0
+#define PIC2_DATA    0xA1
+#define PIC_EOI      0x20
+
+struct IDT_entry {
+    unsigned short offset_low;
+    unsigned short selector;
+    unsigned char zero;
+    unsigned char type_attr;
+    unsigned short offset_high;
+} __attribute__((packed));
+
+struct IDT_entry idt[256];
+struct IDT_ptr {
+    unsigned short limit;
+    unsigned int base;
+} __attribute__((packed)) idt_ptr;
+
+extern void load_idt(void*);
+extern void irq0_timer_handler();
+extern void irq1_keyboard_handler();
+
+void set_idt_entry(int n, unsigned int handler) {
+    idt[n].offset_low = handler & 0xFFFF;
+    idt[n].selector = 0x08;
+    idt[n].zero = 0;
+    idt[n].type_attr = 0x8E;
+    idt[n].offset_high = (handler >> 16) & 0xFFFF;
+}
+
+void pic_remap() {
+    asm volatile("outb %0, %1" : : "a"((unsigned char)0x11), "Nd"((uint16_t)PIC1_COMMAND));
+    asm volatile("outb %0, %1" : : "a"((unsigned char)0x11), "Nd"((uint16_t)PIC2_COMMAND));
+    asm volatile("outb %0, %1" : : "a"((unsigned char)0x20), "Nd"((uint16_t)PIC1_DATA));
+    asm volatile("outb %0, %1" : : "a"((unsigned char)0x28), "Nd"((uint16_t)PIC2_DATA));
+    asm volatile("outb %0, %1" : : "a"((unsigned char)0x04), "Nd"((uint16_t)PIC1_DATA));
+    asm volatile("outb %0, %1" : : "a"((unsigned char)0x02), "Nd"((uint16_t)PIC2_DATA));
+    asm volatile("outb %0, %1" : : "a"((unsigned char)0x01), "Nd"((uint16_t)PIC1_DATA));
+    asm volatile("outb %0, %1" : : "a"((unsigned char)0x01), "Nd"((uint16_t)PIC2_DATA));
+}
+
+volatile int ticks = 0;
+char last_key = 0;
+
+// C handlers called from ASM stubs
+void timer_handler() {
+    ticks++;
+    asm volatile("outb %0, %1" : : "a"((unsigned char)PIC_EOI), "Nd"((uint16_t)PIC1_COMMAND));
+}
+void keyboard_handler() {
+    asm volatile("inb $0x60, %0" : "=a"(last_key));
+    asm volatile("outb %0, %1" : : "a"((unsigned char)PIC_EOI), "Nd"((uint16_t)PIC1_COMMAND));
+}
 static void scroll_screen(char* video) {
     //move al lines up by one
     for (int row = 1; row < 25; row++) {
@@ -298,8 +355,8 @@ static void print_string_sameline(const char* str, int len, char* video, int* cu
 // read byte from cmos
 static unsigned char cmos_read(unsigned char reg) {
     unsigned char value;
-    asm volatile ("outb %0, %1" : : "a"(reg), "Nd"((unsigned short)0x70));
-    asm volatile ("inb %1, %0" : "=a"(value) : "Nd"((unsigned short)0x71));
+    asm volatile ("outb %0, %1" : : "a"((unsigned char)reg), "Nd"((uint16_t)0x70));
+    asm volatile ("inb %1, %0" : "=a"(value) : "Nd"((uint16_t)0x71));
     return value;
 }
 
@@ -559,7 +616,7 @@ static void dispatch_command(const char* cmd, char* video, int* cursor) {
     } else if (mini_strcmp(cmd, "about") == 0) {
         handle_command(cmd, video, cursor, "about", "Smiggles v1.0.0\nJules Miller and Vajra Vanukuri", 0xD); // help/about
     } else if (mini_strcmp(cmd, "help") == 0) {
-        handle_command(cmd, video, cursor, "help", "Available commands:\nprint \"text\" (prints text)\necho \"text\" > file.txt (creates file)\nls (view all files)\ncat file.txt (read contents of file)\nrm file.txt (delete file)\nmkdir dirname (make dir)\ncd dirname (change dir)\ntime (displays time in UTC)\nclear/cls (clear screen)\nmv oldname newname (rename/move file)\nrmdir dirname (remove empty dir)\nfree (RAM/file table usage)\ndf (filesystem usage)\nver (version info)\nuptime (system uptime)\nhalt (shutdown)\nreboot (restart)\nhexdump file.txt (hex view of file)\nhistory (recent commands)\ncalculator: just type an expression like 4*5, 2^2, (2+3)*4", 0xD); // help/about
+        handle_command(cmd, video, cursor, "help", "Available commands:\nprint \"text\" (prints text)\necho \"text\" > file.txt (creates file)\nls (view all files)\ncat file.txt (read contents of file)\nrm file.txt (delete file)\nmkdir dirname (make dir)\ncd dirname (change dir)\ntime (displays time in UTC)\nclear/cls (clear screen)\nmv oldname newname (rename/move file)\nrmdir dirname (remove empty dir)\nfree (RAM/file table usage)\ndf (filesystem usage)\nver (version info)\nuptime (system uptime)\nhalt (shutdown)\nreboot (restart)\nhexdump file.txt (hex view of file)\nhistory (recent commands)", 0xD); // help/about
     } else if (is_math_expr(cmd)) {
         handle_calc_command(cmd, video, cursor);
     } else if (cmd[0] == 'm' && cmd[1] == 'k' && cmd[2] == 'd' && cmd[3] == 'i' && cmd[4] == 'r' && cmd[5] == ' ') {
@@ -747,6 +804,14 @@ static void print_string_sameline(const char* str, int len, char* video, int* cu
 }
 
 void kernel_main(void) {
+    // --- Interrupt setup ---
+    pic_remap();
+    set_idt_entry(0x20, (unsigned int)irq0_timer_handler);
+    set_idt_entry(0x21, (unsigned int)irq1_keyboard_handler);
+    idt_ptr.limit = sizeof(idt) - 1;
+    idt_ptr.base = (unsigned int)&idt;
+    load_idt(&idt_ptr);
+    asm volatile("sti");
     char* video = (char*)0xB8000;
     int cursor = 0;
     int prompt_end = 0;
@@ -801,10 +866,10 @@ void kernel_main(void) {
 
     
     unsigned short pos = cursor;
-    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
-    asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((unsigned short)0x3D5));
-    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
-    asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
+    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((uint16_t)0x3D4));
+    asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((uint16_t)0x3D5));
+    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((uint16_t)0x3D4));
+    asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos >> 8) & 0xFF)), "Nd"((uint16_t)0x3D5));
 
     
     char cmd_buf[64];
