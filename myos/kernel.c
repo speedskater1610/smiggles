@@ -1,20 +1,20 @@
-// Scroll the screen up by one line
 static void scroll_screen(char* video) {
-    // Move all lines up by one
+    //move al lines up by one
     for (int row = 1; row < 25; row++) {
         for (int col = 0; col < 80; col++) {
             video[((row-1)*80+col)*2] = video[(row*80+col)*2];
             video[((row-1)*80+col)*2+1] = video[(row*80+col)*2+1];
         }
     }
-    // Clear the last line
+    // ckear last line
     for (int col = 0; col < 80; col++) {
         video[((24)*80+col)*2] = ' ';
         video[((24)*80+col)*2+1] = 0x07;
     }
 }
-// --- RAM-based file system ---
 
+
+//ram file system
 #define MAX_FILES 8
 #define MAX_FILE_NAME 32
 #define MAX_FILE_SIZE 128
@@ -24,22 +24,134 @@ static void scroll_screen(char* video) {
 typedef struct {
     char name[MAX_DIR_NAME];
     int used;
-    int parent; // index of parent directory, -1 for root
+    int parent; 
 } RamDir;
 
 static RamDir dir_table[MAX_DIRS] = { {"root", 1, -1} };
 static int dir_count = 1;
-static int current_dir = 0; // index in dir_table
+static int current_dir = 0;
 
-// Forward declaration for print_string and print_string_sameline
+
+//forward delcarations
 static void print_string(const char* str, int len, char* video, int* cursor, unsigned char color);
 static void print_string_sameline(const char* str, int len, char* video, int* cursor, unsigned char color);
+
+//CALCULATOR PARSER
+
+//forward declarations
+static int parse_expr(const char **s);
+static int parse_term(const char **s);
+static int parse_factor(const char **s);
+static int parse_number(const char **s);
+static void skip_spaces(const char **s);
+
+static void skip_spaces(const char **s) {
+    while (**s == ' ') (*s)++;
+}
+
+static int parse_number(const char **s) {
+    skip_spaces(s);
+    int val = 0;
+    int neg = 0;
+    if (**s == '-') {
+        neg = 1;
+        (*s)++;
+    }
+    while (**s >= '0' && **s <= '9') {
+        val = val * 10 + (**s - '0');
+        (*s)++;
+    }
+    return neg ? -val : val;
+}
+
+static int parse_factor(const char **s) {
+    skip_spaces(s);
+    int val;
+    if (**s == '(') {
+        (*s)++;
+        val = parse_expr(s);
+        skip_spaces(s);
+        if (**s == ')') (*s)++;
+        else ; // 
+        return val;
+    } else {
+        return parse_number(s);
+    }
+}
+
+static int parse_power(const char **s) {
+    int base = parse_factor(s);
+    skip_spaces(s);
+    while (**s == '^') {
+        (*s)++;
+        int exp = parse_power(s); //
+        int result = 1;
+        for (int i = 0; i < exp; i++) result *= base;
+        base = result;
+        skip_spaces(s);
+    }
+    return base;
+}
+
+static int parse_term(const char **s) {
+    int val = parse_power(s);
+    skip_spaces(s);
+    while (**s == '*' || **s == '/') {
+        char op = **s;
+        (*s)++;
+        int rhs = parse_power(s);
+        if (op == '*') val *= rhs;
+        else if (op == '/') val /= rhs;
+        skip_spaces(s);
+    }
+    return val;
+}
+
+static int parse_expr(const char **s) {
+    int val = parse_term(s);
+    skip_spaces(s);
+    while (**s == '+' || **s == '-') {
+        char op = **s;
+        (*s)++;
+        int rhs = parse_term(s);
+        if (op == '+') val += rhs;
+        else if (op == '-') val -= rhs;
+        skip_spaces(s);
+    }
+    return val;
+}
+
+// tells if a string is a math expression or not
+static int is_math_expr(const char* s) {
+    skip_spaces(&s);
+    if ((*s >= '0' && *s <= '9') || *s == '(' || *s == '-') return 1;
+    return 0;
+}
+
+static void handle_calc_command(const char* expr, char* video, int* cursor) {
+    const char* s = expr;
+    int result = parse_expr(&s);
+    char buf[32];
+    int n = 0, r = result;
+    int neg = 0;
+    if (r < 0) { neg = 1; r = -r; }
+    do {
+        buf[n++] = '0' + (r % 10);
+        r /= 10;
+    } while (r > 0 && n < 30);
+    if (neg) buf[n++] = '-';
+    for (int i = 0; i < n/2; i++) {
+        char t = buf[i]; buf[i] = buf[n-1-i]; buf[n-1-i] = t;
+    }
+    buf[n] = 0;
+    print_string(buf, n, video, cursor, 0x0A); // green
+}
 
 typedef struct {
     char name[MAX_FILE_NAME];
     char data[MAX_FILE_SIZE];
     int size;
-    int dir; // directory index
+    int dir; // 
 } RamFile;
 
 static RamFile file_table[MAX_FILES];
@@ -89,38 +201,38 @@ static int find_file(const char* name) {
     return -1;
 }
 
-// List files (ls command)
+//ls
 static void handle_ls_command(char* video, int* cursor, unsigned char color_unused) {
     int found = 0;
-    // List subdirectories in current directory
+    //folders in current directory
     for (int i = 0; i < dir_count; i++) {
         if (dir_table[i].used && dir_table[i].parent == current_dir && i != current_dir) {
-            print_string(dir_table[i].name, -1, video, cursor, 0xB); // light cyan
+            print_string(dir_table[i].name, -1, video, cursor, 0xB); 
             print_string_sameline("/", 1, video, cursor, 0xB);
             found = 1;
         }
     }
-    // List files in current directory
+    //files in current directory
     for (int i = 0; i < file_count; i++) {
         if (file_table[i].dir == current_dir) {
-            print_string(file_table[i].name, -1, video, cursor, 0xB); // light cyan
+            print_string(file_table[i].name, -1, video, cursor, 0xB); 
             found = 1;
         }
     }
     if (!found) print_string("(empty)", 7, video, cursor, 0xB);
 }
 
-// Show file contents (cat command)
+//cat file.txt
 static void handle_cat_command(const char* filename, char* video, int* cursor, unsigned char color_unused) {
     int idx = find_file(filename);
     if (idx == -1) {
-        print_string("File not found", 14, video, cursor, 0xC); // error
+        print_string("File not found", 14, video, cursor, 0xC); 
         return;
     }
-    print_string(file_table[idx].data, file_table[idx].size, video, cursor, 0xB); // file content: light cyan
+    print_string(file_table[idx].data, file_table[idx].size, video, cursor, 0xB); 
 }
 
-// Write to file (echo command)
+//echo "asdf" > file.txt 
 static void handle_echo_command(const char* text, const char* filename, char* video, int* cursor, unsigned char color_unused) {
     int idx = find_file(filename);
     if (idx == -1) {
@@ -134,7 +246,7 @@ static void handle_echo_command(const char* text, const char* filename, char* vi
             file_table[idx].name[j] = filename[j];
             j++;
         }
-        // Ensure the file has a ".txt" extension if none is provided
+        //txt extension by default
         if (j < MAX_FILE_NAME - 4 && !(filename[j - 4] == '.' && filename[j - 3] == 't' && filename[j - 2] == 'x' && filename[j - 1] == 't')) {
             file_table[idx].name[j++] = '.';
             file_table[idx].name[j++] = 't';
@@ -155,21 +267,21 @@ static void handle_echo_command(const char* text, const char* filename, char* vi
     print_string("OK", 2, video, cursor, 0xA); // confirmation
 }
 
-// Delete a file (rm command)
+//rm file.txt
 static void handle_rm_command(const char* filename, char* video, int* cursor, unsigned char color_unused) {
     int idx = find_file(filename);
     if (idx == -1) {
-        print_string("File not found", 14, video, cursor, 0xC); // error
+        print_string("File not found", 14, video, cursor, 0xC); 
         return;
     }
-    // Shift all files after idx left by one
+    //index
     for (int i = idx; i < file_count - 1; i++) {
         for (int j = 0; j < MAX_FILE_NAME; j++) file_table[i].name[j] = file_table[i+1].name[j];
         for (int j = 0; j < MAX_FILE_SIZE; j++) file_table[i].data[j] = file_table[i+1].data[j];
         file_table[i].size = file_table[i+1].size;
     }
     file_count--;
-    print_string("Deleted", 7, video, cursor, 0xA); // confirmation
+    print_string("Deleted", 7, video, cursor, 0xA); 
 }
 static int mini_strcmp(const char* a, const char* b) {
     int i = 0;
@@ -180,11 +292,10 @@ static int mini_strcmp(const char* a, const char* b) {
     return a[i] - b[i];
 }
 
-// Forward declaration for print_string
 static void print_string(const char* str, int len, char* video, int* cursor, unsigned char color);
 static void print_string_sameline(const char* str, int len, char* video, int* cursor, unsigned char color);
 
-// Read a byte from CMOS register
+// read byte from cmos
 static unsigned char cmos_read(unsigned char reg) {
     unsigned char value;
     asm volatile ("outb %0, %1" : : "a"(reg), "Nd"((unsigned short)0x70));
@@ -197,12 +308,12 @@ static unsigned char bcd_to_bin(unsigned char bcd) {
     return ((bcd >> 4) * 10) + (bcd & 0x0F);
 }
 
-// Get time string from CMOS (format: HH:MM:SS) and write to buf (must be at least 9 bytes)
+//time (UTC)
 static void get_time_string(char* buf) {
     unsigned char hour = cmos_read(0x04);
     unsigned char min  = cmos_read(0x02);
     unsigned char sec  = cmos_read(0x00);
-    // Convert from BCD if needed (most BIOSes use BCD)
+    //convert from bcd
     hour = bcd_to_bin(hour);
     min  = bcd_to_bin(min);
     sec  = bcd_to_bin(sec);
@@ -217,7 +328,7 @@ static void get_time_string(char* buf) {
     buf[8] = 0;
 }
 
-// Handle the 'time' command
+
 static void handle_time_command(char* video, int* cursor, unsigned char color) {
     char timebuf[9];
     get_time_string(timebuf);
@@ -225,7 +336,7 @@ static void handle_time_command(char* video, int* cursor, unsigned char color) {
     print_string_sameline(" UTC", 4, video, cursor, color);
 }
 
-// Clear screen command
+//clear
 static void handle_clear_command(char* video, int* cursor) {
     for (int i = 0; i < 80 * 25 * 2; i += 2) {
         video[i] = ' ';
@@ -234,7 +345,7 @@ static void handle_clear_command(char* video, int* cursor) {
     *cursor = 0;
 }
 
-// Move/rename file command
+//move rename file ~
 static void handle_mv_command(const char* oldname, const char* newname, char* video, int* cursor) {
     int idx = find_file(oldname);
     if (idx == -1) {
@@ -249,9 +360,6 @@ static void handle_mv_command(const char* oldname, const char* newname, char* vi
     file_table[idx].name[i] = 0;
     print_string("File renamed", 12, video, cursor, 0xA);
 }
-
-// Fix handle_pwd_command to ensure it resets the cursor and displays the prompt
-// Fixed pwd command - only prints path, does NOT touch cursor or prompt
 
 
 
@@ -268,12 +376,12 @@ static void handle_mkdir_command(const char* dirname, char* video, int* cursor, 
     // Check if subdir exists in current dir
     for (int i = 0; i < dir_count; i++) {
         if (dir_table[i].used && dir_table[i].parent == current_dir && mini_strcmp(dir_table[i].name, dirname) == 0) {
-            print_string("Directory exists", 16, video, cursor, 0xC); // error
+            print_string("Directory exists", 16, video, cursor, 0xC); 
             return;
         }
     }
     if (dir_count >= MAX_DIRS) {
-        print_string("Dir table full", 14, video, cursor, 0xC); // error
+        print_string("Dir table full", 14, video, cursor, 0xC); 
         return;
     }
     int idx = dir_count++;
@@ -285,27 +393,27 @@ static void handle_mkdir_command(const char* dirname, char* video, int* cursor, 
     dir_table[idx].name[j] = 0;
     dir_table[idx].used = 1;
     dir_table[idx].parent = current_dir;
-    print_string("Dir created", 11, video, cursor, 0xA); // confirmation
+    print_string("Dir created", 11, video, cursor, 0xA); 
 }
 
 static void handle_cd_command(const char* dirname, char* video, int* cursor, unsigned char color_unused) {
     if (mini_strcmp(dirname, "..") == 0) {
         if (current_dir == 0) {
-            print_string("Already at root", 15, video, cursor, 0xC); // error
+            print_string("Already at root", 15, video, cursor, 0xC); 
             return;
         }
         current_dir = dir_table[current_dir].parent;
-        print_string("Changed dir", 11, video, cursor, 0xA); // confirmation
+        print_string("Changed dir", 11, video, cursor, 0xA); 
         return;
     }
     for (int i = 0; i < dir_count; i++) {
         if (dir_table[i].used && dir_table[i].parent == current_dir && mini_strcmp(dir_table[i].name, dirname) == 0) {
             current_dir = i;
-            print_string("Changed dir", 11, video, cursor, 0xA); // confirmation
+            print_string("Changed dir", 11, video, cursor, 0xA); 
             return;
         }
     }
-    print_string("No such dir", 11, video, cursor, 0xC); // error
+    print_string("No such dir", 11, video, cursor, 0xC); 
 }
 
 // Remove empty directory command
@@ -333,7 +441,7 @@ static void handle_rmdir_command(const char* dirname, char* video, int* cursor) 
     print_string("No such directory", 18, video, cursor, 0xC);
 }
 
-// Custom integer to string conversion
+//integer to string utility
 static void int_to_str(int value, char* buf) {
     char temp[12];
     int i = 0, j = 0;
@@ -348,14 +456,14 @@ static void int_to_str(int value, char* buf) {
     buf[j] = 0;
 }
 
-// Custom string concatenation
+//concat ultility
 static void str_concat(char* dest, const char* src) {
     while (*dest) dest++;
     while (*src) *dest++ = *src++;
     *dest = 0;
 }
 
-// Show RAM/file table usage command
+//ram usage
 static void handle_free_command(char* video, int* cursor) {
     char buf[64] = "Files: ";
     char temp[12];
@@ -451,7 +559,9 @@ static void dispatch_command(const char* cmd, char* video, int* cursor) {
     } else if (mini_strcmp(cmd, "about") == 0) {
         handle_command(cmd, video, cursor, "about", "Smiggles v1.0.0\nJules Miller and Vajra Vanukuri", 0xD); // help/about
     } else if (mini_strcmp(cmd, "help") == 0) {
-        handle_command(cmd, video, cursor, "help", "Available commands:\nprint \"text\" (prints text)\necho \"text\" > file.txt (creates file)\nls (view all files)\ncat file.txt (read contents of file)\nrm file.txt (delete file)\nmkdir dirname (make dir)\ncd dirname (change dir)\ntime (displays time in UTC)\nclear/cls (clear screen)\nmv oldname newname (rename/move file)\nrmdir dirname (remove empty dir)\nfree (RAM/file table usage)\ndf (filesystem usage)\nver (version info)\nuptime (system uptime)\nhalt (shutdown)\nreboot (restart)\nhexdump file.txt (hex view of file)\nhistory (recent commands)", 0xD); // help/about
+        handle_command(cmd, video, cursor, "help", "Available commands:\nprint \"text\" (prints text)\necho \"text\" > file.txt (creates file)\nls (view all files)\ncat file.txt (read contents of file)\nrm file.txt (delete file)\nmkdir dirname (make dir)\ncd dirname (change dir)\ntime (displays time in UTC)\nclear/cls (clear screen)\nmv oldname newname (rename/move file)\nrmdir dirname (remove empty dir)\nfree (RAM/file table usage)\ndf (filesystem usage)\nver (version info)\nuptime (system uptime)\nhalt (shutdown)\nreboot (restart)\nhexdump file.txt (hex view of file)\nhistory (recent commands)\ncalculator: just type an expression like 4*5, 2^2, (2+3)*4", 0xD); // help/about
+    } else if (is_math_expr(cmd)) {
+        handle_calc_command(cmd, video, cursor);
     } else if (cmd[0] == 'm' && cmd[1] == 'k' && cmd[2] == 'd' && cmd[3] == 'i' && cmd[4] == 'r' && cmd[5] == ' ') {
         int start = 6;
         while (cmd[start] == ' ') start++;
@@ -780,6 +890,7 @@ void kernel_main(void) {
                     char c = 0;
                     const char lower_table[128] = {
                         [0x02] = '1', [0x03] = '2', [0x04] = '3', [0x05] = '4', [0x06] = '5', [0x07] = '6',
+                        [0x08] = '7', [0x09] = '8', [0x0A] = '9', [0x0B] = '0',
                         [0x0C] = '-', [0x0D] = '=',
                         [0x10] = 'q', [0x11] = 'w', [0x12] = 'e', [0x13] = 'r', [0x14] = 't', [0x15] = 'y',
                         [0x16] = 'u', [0x17] = 'i', [0x18] = 'o', [0x19] = 'p',
