@@ -88,7 +88,6 @@ static RamDir dir_table[MAX_DIRS] = { {"root", 1, -1} };
 static int dir_count = 1;
 static int current_dir = 0;
 
-
 //forward delcarations
 static void print_string(const char* str, int len, char* video, int* cursor, unsigned char color);
 static void print_string_sameline(const char* str, int len, char* video, int* cursor, unsigned char color);
@@ -446,8 +445,6 @@ static void handle_mv_command(const char* oldname, const char* newname, char* vi
     print_string("File renamed", 12, video, cursor, 0xA);
 }
 
-
-
 //for basic call and reply commands
 static void handle_command(const char* cmd, char* video, int* cursor, const char* input, const char* output, unsigned char color) {
     if (mini_strcmp(cmd, input) == 0) {
@@ -644,15 +641,67 @@ static void handle_history_command(char* video, int* cursor) {
     }
 }
 
+// --- NEW HELPER: draw_prompt (used after history) ---
+static void draw_prompt(char* video,
+                        int* cursor,
+                        int* line_start,
+                        char* cmd_buf,
+                        int* cmd_len,
+                        int* cmd_cursor) {
+    // move to next line
+    *cursor = ((*cursor / 80) + 1) * 80;
+    if (*cursor >= 80 * 25) {
+        scroll_screen(video);
+        *cursor -= 80;
+    }
+    const char* prompt = "> ";
+    int pi = 0;
+    while (prompt[pi] && *cursor < 80 * 25 - 1) {
+        video[*cursor * 2]     = prompt[pi];
+        video[*cursor * 2 + 1] = 0x0F;
+        (*cursor)++;
+        pi++;
+    }
+    *line_start = *cursor;
+    *cmd_len = 0;
+    *cmd_cursor = 0;
+}
+
 // Dispatch command
-static void dispatch_command(const char* cmd, char* video, int* cursor) {
+static void dispatch_command(const char* cmd,
+                             char* video,
+                             int* cursor,
+                             int* line_start,
+                             char* cmd_buf,
+                             int* cmd_len,
+                             int* cmd_cursor) {
     add_to_history(cmd); // Add the command to history
     if (mini_strcmp(cmd, "ping") == 0) {
         handle_command(cmd, video, cursor, "ping", "pong", 0xA); // confirmation
     } else if (mini_strcmp(cmd, "about") == 0) {
         handle_command(cmd, video, cursor, "about", "Smiggles v1.0.0\nJules Miller and Vajra Vanukuri", 0xD); // help/about
     } else if (mini_strcmp(cmd, "help") == 0) {
-        handle_command(cmd, video, cursor, "help", "Available commands:\nprint \"text\" (prints text)\necho \"text\" > file.txt (creates file)\nls (view all files)\ncat file.txt (read contents of file)\nrm file.txt (delete file)\nmkdir dirname (make dir)\ncd dirname (change dir)\ntime (displays time in UTC)\nclear/cls (clear screen)\nmv oldname newname (rename/move file)\nrmdir dirname (remove empty dir)\nfree (RAM/file table usage)\ndf (filesystem usage)\nver (version info)\nuptime (system uptime)\nhalt (shutdown)\nreboot (restart)\nhexdump file.txt (hex view of file)\nhistory (recent commands)", 0xD); // help/about
+        handle_command(cmd, video, cursor, "help",
+            "Available commands:\n"
+            "print \"text\" (prints text)\n"
+            "echo \"text\" > file.txt (creates file)\n"
+            "ls (view all files)\n"
+            "cat file.txt (read contents of file)\n"
+            "rm file.txt (delete file)\n"
+            "mkdir dirname (make dir)\n"
+            "cd dirname (change dir)\n"
+            "time (displays time in UTC)\n"
+            "clear/cls (clear screen)\n"
+            "mv oldname newname (rename/move file)\n"
+            "rmdir dirname (remove empty dir)\n"
+            "free (RAM/file table usage)\n"
+            "df (filesystem usage)\n"
+            "ver (version info)\n"
+            "uptime (system uptime)\n"
+            "halt (shutdown)\n"
+            "reboot (restart)\n"
+            "hexdump file.txt (hex view of file)\n"
+            "history (recent commands)", 0xD); // help/about
     } else if (is_math_expr(cmd)) {
         handle_calc_command(cmd, video, cursor);
     } else if (mini_strcmp(cmd, "lsall") == 0) {
@@ -709,13 +758,13 @@ static void dispatch_command(const char* cmd, char* video, int* cursor) {
         //format: echo "text" > filename
         int quote_start = 5;
         while (cmd[quote_start] == ' ') quote_start++;
-        if (cmd[quote_start] != '"') {
+        if (cmd[quote_start] != '\"') {
             print_string("Bad echo syntax", 16, video, cursor, 0x0C);
             return;
         }
         int quote_end = quote_start + 1;
-        while (cmd[quote_end] && cmd[quote_end] != '"') quote_end++;
-        if (cmd[quote_end] != '"') {
+        while (cmd[quote_end] && cmd[quote_end] != '\"') quote_end++;
+        if (cmd[quote_end] != '\"') {
             print_string("Bad echo syntax", 16, video, cursor, 0x0C);
             return;
         }
@@ -856,7 +905,6 @@ void kernel_main(void) {
     int line_start = 0;
     unsigned char prev_scancode = 0;
     int shift = 0;
-
     
     for (int i = 0; i < 80*25*2; i += 2) {
         video[i] = ' ';
@@ -901,14 +949,12 @@ void kernel_main(void) {
     }
     prompt_end = cursor;
     line_start = cursor;
-
     
     unsigned short pos = cursor;
     asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((uint16_t)0x3D4));
     asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((uint16_t)0x3D5));
     asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((uint16_t)0x3D4));
     asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos >> 8) & 0xFF)), "Nd"((uint16_t)0x3D5));
-
     
     char cmd_buf[64];
     int cmd_len = 0;
@@ -956,7 +1002,6 @@ void kernel_main(void) {
                 }
                 else if (scancode != prev_scancode && scancode != 0) {
                     prev_scancode = scancode;
-
                     // Handle left/right arrow keys (E0 4B and E0 4D)
                     if (e0_prefix) {
                         if (scancode == 0x4B) { // Left arrow
@@ -1013,7 +1058,7 @@ void kernel_main(void) {
                         [0x10] = 'Q', [0x11] = 'W', [0x12] = 'E', [0x13] = 'R', [0x14] = 'T', [0x15] = 'Y',
                         [0x16] = 'U', [0x17] = 'I', [0x18] = 'O', [0x19] = 'P',
                         [0x1A] = '{', [0x1B] = '}', [0x1E] = 'A', [0x1F] = 'S', [0x20] = 'D', [0x21] = 'F', [0x22] = 'G', [0x23] = 'H',
-                        [0x24] = 'J', [0x25] = 'K', [0x26] = 'L', [0x27] = ':', [0x28] = '"', [0x29] = '~',
+                        [0x24] = 'J', [0x25] = 'K', [0x26] = 'L', [0x27] = ':', [0x28] = '\"', [0x29] = '~',
                         [0x2B] = '|', [0x2C] = 'Z', [0x2D] = 'X', [0x2E] = 'C', [0x2F] = 'V', [0x30] = 'B', [0x31] = 'N', [0x32] = 'M',
                         [0x33] = '<', [0x34] = '>', [0x35] = '?', [0x39] = ' ', [0x1C] = '\n', [0x0E] = 8, // backspace
                         [0x0F] = '\t',
@@ -1031,18 +1076,20 @@ void kernel_main(void) {
                         if (c == '\n') {
                             cmd_buf[cmd_len] = 0;
                             // Print command: print "text"
-                            if (cmd_buf[0] == 'p' && cmd_buf[1] == 'r' && cmd_buf[2] == 'i' && cmd_buf[3] == 'n' && cmd_buf[4] == 't' && cmd_buf[5] == ' ' && cmd_buf[6] == '"') {
+                            if (cmd_buf[0] == 'p' && cmd_buf[1] == 'r' && cmd_buf[2] == 'i' && cmd_buf[3] == 'n' && cmd_buf[4] == 't' && cmd_buf[5] == ' ' && cmd_buf[6] == '\"') {
                                 // Find closing quote
                                 int start = 7;
                                 int end = start;
-                                while (cmd_buf[end] && cmd_buf[end] != '"') end++;
-                                if (cmd_buf[end] == '"') {
+                                while (cmd_buf[end] && cmd_buf[end] != '\"') end++;
+                                if (cmd_buf[end] == '\"') {
                                     // Print the string between quotes
                                     // Move cursor to new line before printing
                                     print_string(&cmd_buf[start], end - start, video, &cursor, 0x0D);
                                 }
                             } else {
-                                dispatch_command(cmd_buf, video, &cursor);
+                                // NOTE: now we pass line_start/cmd_buf/cmd_len/cmd_cursor
+                                dispatch_command(cmd_buf, video, &cursor,
+                                                 &line_start, cmd_buf, &cmd_len, &cmd_cursor);
                             }
                             // New prompt
                             cursor = ((cursor / 80) + 1) * 80;
@@ -1126,11 +1173,11 @@ void kernel_main(void) {
                                 }
                             }
                         }
-                        unsigned short pos = cursor;
+                        unsigned short pos2 = cursor;
                         asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
-                        asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((unsigned short)0x3D5));
+                        asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos2 & 0xFF)), "Nd"((unsigned short)0x3D5));
                         asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
-                        asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
+                        asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos2 >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
                     }
                 }
             }
