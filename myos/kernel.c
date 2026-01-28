@@ -808,7 +808,9 @@ static void handle_uptime_command(char* video, int* cursor) {
 // Halt command
 static void handle_halt_command(char* video, int* cursor) {
     handle_clear_command(video, cursor);
-    print_string("System halted", 13, video, cursor, 0xC);
+    print_string("Shutting down...", 15, video, cursor, 0xC);
+    // Shutdown for QEMU
+    asm volatile("outw %0, %1" : : "a"((unsigned short)0x2000), "Nd"((unsigned short)0x604));
     while (1) {}
 }
 
