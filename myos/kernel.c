@@ -46,6 +46,7 @@ void pic_remap() {
 volatile int ticks = 0;
 char last_key = 0;
 int just_saved = 0;
+int skip_next_prompt = 0;
 
 // C handlers called from ASM stubs
 void timer_handler() {
@@ -138,6 +139,10 @@ static void nano_editor(const char* filename, char* video, int* cursor) {
         return;
     }
     char* buf = file_table[idx].data;
+    // Save the current screen and cursor
+    char prev_screen[80*25*2];
+    for (int i = 0; i < 80*25*2; ++i) prev_screen[i] = video[i];
+    int prev_cursor = *cursor;
     int pos = file_table[idx].size;
     int editing = 1;
     int maxlen = MAX_FILE_SIZE - 1;
@@ -174,12 +179,12 @@ static void nano_editor(const char* filename, char* video, int* cursor) {
         video[(draw_cursor)*2] = ' ';
         video[(draw_cursor)*2+1] = 0x07;
     }
-    *cursor = edit_start + cursor_row * 80 + cursor_col;
-    unsigned short pos_hw = *cursor;
-    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
-    asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos_hw & 0xFF)), "Nd"((unsigned short)0x3D5));
-    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
-    asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos_hw >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
+        *cursor = edit_start + cursor_row * 80 + cursor_col;
+        unsigned short pos_hw = *cursor;
+        asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
+        asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos_hw & 0xFF)), "Nd"((unsigned short)0x3D5));
+        asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
+        asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos_hw >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
     int shift = 0, ctrl = 0;
     unsigned char prev_scancode = 0;
     int exit_code = 0; // 0 = none, 1 = saved, 2 = exited
@@ -295,13 +300,47 @@ static void nano_editor(const char* filename, char* video, int* cursor) {
         asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
         asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos_hw >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
     }
-    // Clear screen
-    for (int i = 0; i < 80*25*2; i += 2) {
-        video[i] = ' ';
-        video[i+1] = 0x07;
+    // Restore previous screen and append [Saved] or [Exited] after the command
+    for (int i = 0; i < 80*25*2; ++i) video[i] = prev_screen[i];
+    *cursor = prev_cursor;
+    // Move cursor to end of line (after command)
+    while (*cursor < 80*25 && video[(*cursor)*2] != 0 && video[(*cursor)*2] != ' ' && video[(*cursor)*2] != '\0') (*cursor)++;
+    // Move to a new line for the [Saved]/[Exited] message
+    *cursor = ((*cursor / 80) + 1) * 80;
+    // Print [Saved] or [Exited] message on its own line
+    const char* msg = (exit_code == 1) ? "[Saved]" : "[Exited]";
+    unsigned char msg_color = (exit_code == 1) ? 0x0A : 0x0C;
+    print_string_sameline(msg, -1, video, cursor, msg_color);
+    // Print a single prompt, on a new line
+    *cursor = ((*cursor / 80) + 1) * 80;
+    const char* prompt = "> ";
+    int pi = 0;
+    int prompt_start = *cursor;
+    while (prompt[pi] && *cursor < 80*25 - 1) {
+        video[(*cursor)*2] = prompt[pi];
+        video[(*cursor)*2+1] = 0x0F;
+        (*cursor)++;
+        pi++;
     }
-    *cursor = 0;
-    just_saved = exit_code;
+    // Set line_start so shell doesn't print another prompt
+    extern int line_start;
+    line_start = *cursor;
+    // Also reset cmd_len and cmd_cursor so shell doesn't see leftover input
+    extern int cmd_len, cmd_cursor;
+    cmd_len = 0;
+    cmd_cursor = 0;
+    extern int skip_next_prompt;
+    skip_next_prompt = 1;
+    // Move hardware cursor to immediately after the prompt (not after the last char)
+    *cursor = prompt_start + 2; // prompt is "> "
+    {
+        unsigned short pos_hw = *cursor;
+        asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
+        asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos_hw & 0xFF)), "Nd"((unsigned short)0x3D5));
+        asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
+        asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos_hw >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
+    }
+    just_saved = 0;
 }
 
 //CALCULATOR PARSER
@@ -1057,6 +1096,9 @@ static void print_string_sameline(const char* str, int len, char* video, int* cu
     }
 }
 
+int line_start = 0;
+int cmd_len = 0;
+int cmd_cursor = 0;
 void kernel_main(void) {
     // --- Interrupt setup ---
     pic_remap();
@@ -1102,8 +1144,9 @@ void kernel_main(void) {
 
     
     char cmd_buf[64];
-    int cmd_len = 0;
-    int cmd_cursor = 0; // position within the input line
+    // Use global cmd_len and cmd_cursor so nano_editor can reset them
+    // int cmd_len = 0;
+    // int cmd_cursor = 0; // position within the input line
 
     // Enable cursor
     asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0A), "Nd"((unsigned short)0x3D4));
@@ -1242,17 +1285,18 @@ void kernel_main(void) {
                                 dispatch_command(cmd_buf, video, &cursor);
                             }
                             if (just_saved) {
-                                int msg_color = (just_saved == 1) ? 0x0A : 0x0C;
-                                const char* msg = (just_saved == 1) ? "[Saved]" : "[Exited]";
+                                // nano_editor already printed the prompt, so skip printing it here
                                 just_saved = 0;
-                                print_smiggles_art(video, &cursor);
-                                cursor += 80; // add one line space
-                                cursor = ((cursor / 80) + 1) * 80;
-                                if (cursor >= 80*25) {
-                                    scroll_screen(video);
-                                    cursor -= 80;
-                                }
-                                print_string(msg, -1, video, &cursor, msg_color);
+                                line_start = cursor;
+                                cmd_len = 0;
+                                cmd_cursor = 0;
+                                continue;
+                            }
+                            extern int skip_next_prompt;
+                            if (skip_next_prompt) {
+                                skip_next_prompt = 0;
+                                line_start = cursor;
+                                continue;
                             }
                             // New prompt
                             cursor = ((cursor / 80) + 1) * 80;
