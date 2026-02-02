@@ -73,6 +73,376 @@ static void scroll_screen(char* video) {
 }
 
 
+//HIERARCHICAL FILE SYSTEM
+#define MAX_PATH_LENGTH 128
+#define MAX_NAME_LENGTH 32
+#define MAX_CHILDREN 16
+#define MAX_NODES 64
+#define MAX_FILE_CONTENT 256
+
+typedef enum {
+    NODE_FILE,
+    NODE_DIRECTORY
+} NodeType;
+
+typedef struct FSNode {
+    char name[MAX_NAME_LENGTH];
+    NodeType type;
+    int parent_idx; // Index in node_table, -1 for root
+    int children_idx[MAX_CHILDREN]; // Indices of children
+    int child_count;
+    char content[MAX_FILE_CONTENT]; // For files only
+    int content_size;
+    int used;
+} FSNode;
+
+static FSNode node_table[MAX_NODES];
+static int node_count = 0;
+static int current_dir_idx = 0; // Index of current working directory
+
+// Forward declarations for filesystem functions
+static int fs_mkdir(const char* path);
+static int fs_touch(const char* path, const char* content);
+static int fs_rm(const char* path, int recursive);
+static int resolve_path(const char* path);
+static void get_full_path(int node_idx, char* path, int max_len);
+
+// Initialize filesystem with root directory
+static void init_filesystem() {
+    for (int i = 0; i < MAX_NODES; i++) {
+        node_table[i].used = 0;
+        node_table[i].child_count = 0;
+    }
+    // Create root directory
+    node_table[0].used = 1;
+    node_table[0].type = NODE_DIRECTORY;
+    node_table[0].parent_idx = -1;
+    node_table[0].child_count = 0;
+    node_table[0].name[0] = '/';
+    node_table[0].name[1] = 0;
+    node_count = 1;
+    current_dir_idx = 0;
+    
+    // Create default directories
+    fs_mkdir("/home");
+    fs_mkdir("/bin");
+    fs_mkdir("/tmp");
+    fs_mkdir("/etc");
+}
+
+// String utilities
+static int str_len(const char* s) {
+    int len = 0;
+    while (s[len]) len++;
+    return len;
+}
+
+static void str_copy(char* dst, const char* src, int max) {
+    int i = 0;
+    while (src[i] && i < max - 1) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = 0;
+}
+
+static int str_equal(const char* a, const char* b) {
+    int i = 0;
+    while (a[i] && b[i]) {
+        if (a[i] != b[i]) return 0;
+        i++;
+    }
+    return a[i] == b[i];
+}
+
+// Get full path of a node
+static void get_full_path(int node_idx, char* path, int max_len) {
+    if (node_idx < 0 || node_idx >= MAX_NODES || !node_table[node_idx].used) {
+        path[0] = '/';
+        path[1] = 0;
+        return;
+    }
+    
+    if (node_table[node_idx].parent_idx == -1) {
+        path[0] = '/';
+        path[1] = 0;
+        return;
+    }
+    
+    // Build path recursively
+    char temp[MAX_PATH_LENGTH];
+    int parts[32];
+    int part_count = 0;
+    int current = node_idx;
+    
+    while (current != -1 && current != 0 && part_count < 32) {
+        parts[part_count++] = current;
+        current = node_table[current].parent_idx;
+    }
+    
+    path[0] = '/';
+    int pos = 1;
+    for (int i = part_count - 1; i >= 0 && pos < max_len - 1; i--) {
+        const char* name = node_table[parts[i]].name;
+        int j = 0;
+        while (name[j] && pos < max_len - 1) {
+            path[pos++] = name[j++];
+        }
+        if (i > 0 && pos < max_len - 1) {
+            path[pos++] = '/';
+        }
+    }
+    path[pos] = 0;
+}
+
+// Parse path into components
+static int parse_path(const char* path, char components[32][MAX_NAME_LENGTH], int* comp_count) {
+    *comp_count = 0;
+    int i = 0;
+    int is_absolute = 0;
+    
+    // Skip leading spaces
+    while (path[i] == ' ') i++;
+    
+    // Check if absolute path
+    if (path[i] == '/') {
+        is_absolute = 1;
+        i++;
+    }
+    
+    while (path[i]) {
+        if (path[i] == ' ') break; // Stop at space
+        
+        if (path[i] == '/') {
+            i++;
+            continue;
+        }
+        
+        // Read component
+        int j = 0;
+        while (path[i] && path[i] != '/' && path[i] != ' ' && j < MAX_NAME_LENGTH - 1) {
+            components[*comp_count][j++] = path[i++];
+        }
+        components[*comp_count][j] = 0;
+        
+        if (j > 0) {
+            (*comp_count)++;
+            if (*comp_count >= 32) break;
+        }
+    }
+    
+    return is_absolute;
+}
+
+// Resolve path to node index
+static int resolve_path(const char* path) {
+    char components[32][MAX_NAME_LENGTH];
+    int comp_count = 0;
+    int is_absolute = parse_path(path, components, &comp_count);
+    
+    int current = is_absolute ? 0 : current_dir_idx;
+    
+    for (int i = 0; i < comp_count; i++) {
+        if (str_equal(components[i], ".")) {
+            continue; // Stay in current directory
+        } else if (str_equal(components[i], "..")) {
+            if (node_table[current].parent_idx != -1) {
+                current = node_table[current].parent_idx;
+            }
+        } else {
+            // Find child with matching name
+            int found = -1;
+            for (int j = 0; j < node_table[current].child_count; j++) {
+                int child_idx = node_table[current].children_idx[j];
+                if (str_equal(node_table[child_idx].name, components[i])) {
+                    found = child_idx;
+                    break;
+                }
+            }
+            
+            if (found == -1) {
+                return -1; // Path not found
+            }
+            current = found;
+        }
+    }
+    
+    return current;
+}
+
+// Filesystem operations
+static int fs_mkdir(const char* path) {
+    // Find parent directory
+    char parent_path[MAX_PATH_LENGTH];
+    char dirname[MAX_NAME_LENGTH];
+    
+    int path_len = str_len(path);
+    int last_slash = -1;
+    for (int i = path_len - 1; i >= 0; i--) {
+        if (path[i] == '/') {
+            last_slash = i;
+            break;
+        }
+    }
+    
+    int parent_idx;
+    if (last_slash <= 0) {
+        parent_idx = path[0] == '/' ? 0 : current_dir_idx;
+        str_copy(dirname, path[0] == '/' ? path + 1 : path, MAX_NAME_LENGTH);
+    } else {
+        for (int i = 0; i < last_slash; i++) parent_path[i] = path[i];
+        parent_path[last_slash] = 0;
+        parent_idx = resolve_path(parent_path);
+        str_copy(dirname, path + last_slash + 1, MAX_NAME_LENGTH);
+    }
+    
+    if (parent_idx == -1 || node_table[parent_idx].type != NODE_DIRECTORY) {
+        return -1;
+    }
+    
+    // Check if already exists
+    for (int i = 0; i < node_table[parent_idx].child_count; i++) {
+        int child_idx = node_table[parent_idx].children_idx[i];
+        if (str_equal(node_table[child_idx].name, dirname)) {
+            return -2; // Already exists
+        }
+    }
+    
+    // Find free node
+    int new_idx = -1;
+    for (int i = 0; i < MAX_NODES; i++) {
+        if (!node_table[i].used) {
+            new_idx = i;
+            break;
+        }
+    }
+    
+    if (new_idx == -1 || node_table[parent_idx].child_count >= MAX_CHILDREN) {
+        return -3; // No space
+    }
+    
+    // Create directory
+    node_table[new_idx].used = 1;
+    node_table[new_idx].type = NODE_DIRECTORY;
+    node_table[new_idx].parent_idx = parent_idx;
+    node_table[new_idx].child_count = 0;
+    str_copy(node_table[new_idx].name, dirname, MAX_NAME_LENGTH);
+    
+    node_table[parent_idx].children_idx[node_table[parent_idx].child_count++] = new_idx;
+    if (new_idx >= node_count) node_count = new_idx + 1;
+    
+    return new_idx;
+}
+
+static int fs_touch(const char* path, const char* content) {
+    char parent_path[MAX_PATH_LENGTH];
+    char filename[MAX_NAME_LENGTH];
+    
+    int path_len = str_len(path);
+    int last_slash = -1;
+    for (int i = path_len - 1; i >= 0; i--) {
+        if (path[i] == '/') {
+            last_slash = i;
+            break;
+        }
+    }
+    
+    int parent_idx;
+    if (last_slash <= 0) {
+        parent_idx = path[0] == '/' ? 0 : current_dir_idx;
+        str_copy(filename, path[0] == '/' ? path + 1 : path, MAX_NAME_LENGTH);
+    } else {
+        for (int i = 0; i < last_slash; i++) parent_path[i] = path[i];
+        parent_path[last_slash] = 0;
+        parent_idx = resolve_path(parent_path);
+        str_copy(filename, path + last_slash + 1, MAX_NAME_LENGTH);
+    }
+    
+    if (parent_idx == -1) return -1;
+    
+    // Check if already exists
+    for (int i = 0; i < node_table[parent_idx].child_count; i++) {
+        int child_idx = node_table[parent_idx].children_idx[i];
+        if (str_equal(node_table[child_idx].name, filename)) {
+            if (node_table[child_idx].type == NODE_FILE) {
+                return child_idx; // File exists, return its index
+            }
+            return -2;
+        }
+    }
+    
+    int new_idx = -1;
+    for (int i = 0; i < MAX_NODES; i++) {
+        if (!node_table[i].used) {
+            new_idx = i;
+            break;
+        }
+    }
+    
+    if (new_idx == -1 || node_table[parent_idx].child_count >= MAX_CHILDREN) {
+        return -3;
+    }
+    
+    node_table[new_idx].used = 1;
+    node_table[new_idx].type = NODE_FILE;
+    node_table[new_idx].parent_idx = parent_idx;
+    node_table[new_idx].child_count = 0;
+    str_copy(node_table[new_idx].name, filename, MAX_NAME_LENGTH);
+    
+    if (content) {
+        int len = 0;
+        while (content[len] && len < MAX_FILE_CONTENT - 1) {
+            node_table[new_idx].content[len] = content[len];
+            len++;
+        }
+        node_table[new_idx].content[len] = 0;
+        node_table[new_idx].content_size = len;
+    } else {
+        node_table[new_idx].content[0] = 0;
+        node_table[new_idx].content_size = 0;
+    }
+    
+    node_table[parent_idx].children_idx[node_table[parent_idx].child_count++] = new_idx;
+    if (new_idx >= node_count) node_count = new_idx + 1;
+    
+    return new_idx;
+}
+
+static int fs_rm(const char* path, int recursive) {
+    int node_idx = resolve_path(path);
+    if (node_idx == -1 || node_idx == 0) return -1;
+    
+    if (node_table[node_idx].type == NODE_DIRECTORY && !recursive && node_table[node_idx].child_count > 0) {
+        return -2;
+    }
+    
+    int parent_idx = node_table[node_idx].parent_idx;
+    
+    // Remove from parent's children
+    for (int i = 0; i < node_table[parent_idx].child_count; i++) {
+        if (node_table[parent_idx].children_idx[i] == node_idx) {
+            for (int j = i; j < node_table[parent_idx].child_count - 1; j++) {
+                node_table[parent_idx].children_idx[j] = node_table[parent_idx].children_idx[j + 1];
+            }
+            node_table[parent_idx].child_count--;
+            break;
+        }
+    }
+    
+    // Recursively delete children if directory
+    if (node_table[node_idx].type == NODE_DIRECTORY && recursive) {
+        while (node_table[node_idx].child_count > 0) {
+            int child_idx = node_table[node_idx].children_idx[0];
+            char child_path[MAX_PATH_LENGTH];
+            get_full_path(child_idx, child_path, MAX_PATH_LENGTH);
+            fs_rm(child_path, 1);
+        }
+    }
+    
+    node_table[node_idx].used = 0;
+    return 0;
+}
+
 //ram file system
 #define MAX_FILES 8
 #define MAX_FILE_NAME 32
@@ -112,11 +482,9 @@ static void print_smiggles_art(char* video, int* cursor) {
     *cursor = art_lines * 80;
 }
 
-//forward delcarations
+//forward declarations
 static void print_string(const char* str, int len, char* video, int* cursor, unsigned char color);
 static void print_string_sameline(const char* str, int len, char* video, int* cursor, unsigned char color);
-
-
 
 // Forward declarations for editor dependencies
 static int find_file(const char* name);
@@ -133,19 +501,25 @@ static int file_count = 0;
 
 // --- Nano-like Text Editor ---
 static void nano_editor(const char* filename, char* video, int* cursor) {
-    int idx = find_file(filename);
-    if (idx == -1) {
-        print_string("File not found", 14, video, cursor, 0xC);
-        return;
+    int node_idx = resolve_path(filename);
+    if (node_idx == -1 || node_table[node_idx].type != NODE_FILE) {
+        // Create file if it doesn't exist
+        node_idx = fs_touch(filename, "");
+        if (node_idx < 0) {
+            print_string("Cannot create file", 18, video, cursor, 0xC);
+            return;
+        }
     }
-    char* buf = file_table[idx].data;
+    
+    char* buf = node_table[node_idx].content;
     // Save the current screen and cursor
     char prev_screen[80*25*2];
     for (int i = 0; i < 80*25*2; ++i) prev_screen[i] = video[i];
     int prev_cursor = *cursor;
-    int pos = file_table[idx].size;
+    int pos = node_table[node_idx].content_size;
     int editing = 1;
-    int maxlen = MAX_FILE_SIZE - 1;
+    int maxlen = MAX_FILE_CONTENT - 1;
+    
     for (int i = 0; i < 80 * 25 * 2; i += 2) {
         video[i] = ' ';
         video[i + 1] = 0x07;
@@ -168,26 +542,26 @@ static void nano_editor(const char* filename, char* video, int* cursor) {
             draw_cursor++;
             logical_col++;
         }
-        // If this is the last character, set cursor position
         if (i == pos - 1) {
             cursor_row = logical_row;
             cursor_col = logical_col;
         }
     }
-    // Clear the rest of the edit area
     for (; draw_cursor < edit_start + 80*22; draw_cursor++) {
         video[(draw_cursor)*2] = ' ';
         video[(draw_cursor)*2+1] = 0x07;
     }
-        *cursor = edit_start + cursor_row * 80 + cursor_col;
-        unsigned short pos_hw = *cursor;
-        asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
-        asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos_hw & 0xFF)), "Nd"((unsigned short)0x3D5));
-        asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
-        asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos_hw >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
+    *cursor = edit_start + cursor_row * 80 + cursor_col;
+    unsigned short pos_hw = *cursor;
+    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
+    asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos_hw & 0xFF)), "Nd"((unsigned short)0x3D5));
+    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
+    asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos_hw >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
+    
     int shift = 0, ctrl = 0;
     unsigned char prev_scancode = 0;
-    int exit_code = 0; // 0 = none, 1 = saved, 2 = exited
+    int exit_code = 0;
+    
     while (editing) {
         unsigned char scancode;
         asm volatile("inb $0x60, %0" : "=a"(scancode));
@@ -200,36 +574,32 @@ static void nano_editor(const char* filename, char* video, int* cursor) {
         }
         if (scancode == 0x2A || scancode == 0x36) { shift = 1; continue; }
         if (scancode == 0x1D) { ctrl = 1; continue; }
-        if (ctrl && scancode == 0x1F) { // Ctrl+S
-            file_table[idx].size = pos;
+        if (ctrl && scancode == 0x1F) {
+            node_table[node_idx].content_size = pos;
             buf[pos] = 0;
-            just_saved = 1;
-            // Wait for ctrl release
             while (1) {
                 unsigned char sc;
                 asm volatile("inb $0x60, %0" : "=a"(sc));
-                if (sc == 0x9D) break; // ctrl release
+                if (sc == 0x9D) break;
             }
             exit_code = 1;
             break;
         }
-        if (ctrl && scancode == 0x10) { // Ctrl+Q
-            file_table[idx].size = pos;
+        if (ctrl && scancode == 0x10) {
+            node_table[node_idx].content_size = pos;
             buf[pos] = 0;
-            just_saved = 1;
-            // Wait for ctrl release
             while (1) {
                 unsigned char sc;
                 asm volatile("inb $0x60, %0" : "=a"(sc));
-                if (sc == 0x9D) break; // ctrl release
+                if (sc == 0x9D) break;
             }
             exit_code = 2;
             break;
         }
-        if (scancode == 0x1C && pos < maxlen) { // Enter
+        if (scancode == 0x1C && pos < maxlen) {
             buf[pos++] = '\n';
         }
-        else if (scancode == 0x0E && pos > 0) { // Backspace
+        else if (scancode == 0x0E && pos > 0) {
             if (pos > 0) {
                 pos--;
             }
@@ -265,7 +635,6 @@ static void nano_editor(const char* filename, char* video, int* cursor) {
                 draw_cursor++;
             }
         }
-        // Redraw buffer after every change
         int redraw_cursor = edit_start;
         for (int i = 0; i < pos && redraw_cursor < 80*25; i++) {
             if (buf[i] == '\n') {
@@ -280,7 +649,6 @@ static void nano_editor(const char* filename, char* video, int* cursor) {
             video[(redraw_cursor)*2] = ' ';
             video[(redraw_cursor)*2+1] = 0x07;
         }
-        // Calculate logical cursor position after redraw
         int cur_row = 0, cur_col = 0, temp = 0;
         for (int i = 0; i < pos; i++) {
             if (buf[i] == '\n') {
@@ -300,47 +668,43 @@ static void nano_editor(const char* filename, char* video, int* cursor) {
         asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
         asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos_hw >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
     }
-    // Restore previous screen and append [Saved] or [Exited] after the command
+    
+    // Restore previous screen
     for (int i = 0; i < 80*25*2; ++i) video[i] = prev_screen[i];
     *cursor = prev_cursor;
-    // Move cursor to end of line (after command)
+    
+    // Move to end of the "edit" command line
     while (*cursor < 80*25 && video[(*cursor)*2] != 0 && video[(*cursor)*2] != ' ' && video[(*cursor)*2] != '\0') (*cursor)++;
-    // Move to a new line for the [Saved]/[Exited] message
+    
+    // Move to a new line for the status message
     *cursor = ((*cursor / 80) + 1) * 80;
-    // Print [Saved] or [Exited] message on its own line
+    if (*cursor >= 80*25) {
+        scroll_screen(video);
+        *cursor -= 80;
+    }
+    
+    // Print status message
     const char* msg = (exit_code == 1) ? "[Saved]" : "[Exited]";
     unsigned char msg_color = (exit_code == 1) ? 0x0A : 0x0C;
-    print_string_sameline(msg, -1, video, cursor, msg_color);
-    // Print a single prompt, on a new line
-    *cursor = ((*cursor / 80) + 1) * 80;
-    const char* prompt = "> ";
-    int pi = 0;
-    int prompt_start = *cursor;
-    while (prompt[pi] && *cursor < 80*25 - 1) {
-        video[(*cursor)*2] = prompt[pi];
-        video[(*cursor)*2+1] = 0x0F;
+    int msg_len = 0;
+    while (msg[msg_len]) msg_len++;
+    for (int i = 0; i < msg_len && *cursor < 80*25 - 1; i++) {
+        video[(*cursor)*2] = msg[i];
+        video[(*cursor)*2+1] = msg_color;
         (*cursor)++;
-        pi++;
     }
-    // Set line_start so shell doesn't print another prompt
-    extern int line_start;
-    line_start = *cursor;
-    // Also reset cmd_len and cmd_cursor so shell doesn't see leftover input
-    extern int cmd_len, cmd_cursor;
-    cmd_len = 0;
-    cmd_cursor = 0;
-    extern int skip_next_prompt;
-    skip_next_prompt = 1;
-    // Move hardware cursor to immediately after the prompt (not after the last char)
-    *cursor = prompt_start + 2; // prompt is "> "
-    {
-        unsigned short pos_hw = *cursor;
-        asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
-        asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos_hw & 0xFF)), "Nd"((unsigned short)0x3D5));
-        asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
-        asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos_hw >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
+    
+    // Don't add extra line - just stay on same line after status message
+    // The main loop will add the new line and prompt
+    
+    // Drain keyboard buffer thoroughly
+    volatile int drain_count = 0;
+    while (drain_count < 100) {
+        unsigned char dummy;
+        asm volatile("inb $0x60, %0" : "=a"(dummy));
+        drain_count++;
+        for (volatile int d = 0; d < 1000; d++);
     }
-    just_saved = 0;
 }
 
 //CALCULATOR PARSER
@@ -502,24 +866,24 @@ static int find_file(const char* name) {
 
 //ls
 static void handle_ls_command(char* video, int* cursor, unsigned char color_unused) {
-    int found = 0;
-    //folders in current directory
-    for (int i = 0; i < MAX_DIRS; i++) {
-        if (i == 0) continue; // skip root dir itself
-        if (dir_table[i].used && dir_table[i].parent == current_dir) {
-            print_string(dir_table[i].name, -1, video, cursor, 0xB); 
+    FSNode* dir = &node_table[current_dir_idx];
+    
+    if (dir->child_count == 0) {
+        print_string("(empty)", 7, video, cursor, 0xB);
+        return;
+    }
+    
+    for (int i = 0; i < dir->child_count; i++) {
+        int child_idx = dir->children_idx[i];
+        FSNode* child = &node_table[child_idx];
+        
+        if (child->type == NODE_DIRECTORY) {
+            print_string(child->name, -1, video, cursor, 0xB);
             print_string_sameline("/", 1, video, cursor, 0xB);
-            found = 1;
+        } else {
+            print_string(child->name, -1, video, cursor, 0x0F);
         }
     }
-    //files in current directory
-    for (int i = 0; i < file_count; i++) {
-        if (file_table[i].dir == current_dir) {
-            print_string(file_table[i].name, -1, video, cursor, 0xB); 
-            found = 1;
-        }
-    }
-    if (!found) print_string("(empty)", 7, video, cursor, 0xB);
 }
 
 // Debug: list all directory slots
@@ -551,64 +915,52 @@ static void handle_lsall_command(char* video, int* cursor) {
 
 //cat file.txt
 static void handle_cat_command(const char* filename, char* video, int* cursor, unsigned char color_unused) {
-    int idx = find_file(filename);
-    if (idx == -1) {
-        print_string("File not found", 14, video, cursor, 0xC); 
+    int node_idx = resolve_path(filename);
+    if (node_idx == -1) {
+        print_string("File not found", 14, video, cursor, 0xC);
         return;
     }
-    print_string(file_table[idx].data, file_table[idx].size, video, cursor, 0xB); 
+    
+    if (node_table[node_idx].type != NODE_FILE) {
+        print_string("Not a file", 10, video, cursor, 0xC);
+        return;
+    }
+    
+    print_string(node_table[node_idx].content, node_table[node_idx].content_size, video, cursor, 0xB);
 }
 
 //echo "asdf" > file.txt 
 static void handle_echo_command(const char* text, const char* filename, char* video, int* cursor, unsigned char color_unused) {
-    int idx = find_file(filename);
-    if (idx == -1) {
-        if (file_count >= MAX_FILES) {
-            print_string("File table full", 15, video, cursor, 0xC); // error
-            return;
+    int node_idx = resolve_path(filename);
+    if (node_idx == -1) {
+        node_idx = fs_touch(filename, text);
+    } else if (node_table[node_idx].type == NODE_FILE) {
+        int len = 0;
+        while (text[len] && len < MAX_FILE_CONTENT - 1) {
+            node_table[node_idx].content[len] = text[len];
+            len++;
         }
-        idx = file_count++;
-        int j = 0;
-        while (filename[j] && j < MAX_FILE_NAME - 1) {
-            file_table[idx].name[j] = filename[j];
-            j++;
-        }
-        //txt extension by default
-        if (j < MAX_FILE_NAME - 4 && !(filename[j - 4] == '.' && filename[j - 3] == 't' && filename[j - 2] == 'x' && filename[j - 1] == 't')) {
-            file_table[idx].name[j++] = '.';
-            file_table[idx].name[j++] = 't';
-            file_table[idx].name[j++] = 'x';
-            file_table[idx].name[j++] = 't';
-        }
-        file_table[idx].name[j] = 0;
-        file_table[idx].dir = current_dir;
+        node_table[node_idx].content[len] = 0;
+        node_table[node_idx].content_size = len;
     }
-    int len = 0;
-    while (text[len] && len < MAX_FILE_SIZE - 1) {
-        file_table[idx].data[len] = text[len];
-        len++;
+    
+    if (node_idx < 0) {
+        print_string("Cannot write file", 17, video, cursor, 0xC);
+    } else {
+        print_string("OK", 2, video, cursor, 0xA);
     }
-    file_table[idx].data[len] = 0;
-    file_table[idx].size = len;
-    file_table[idx].dir = current_dir;
-    print_string("OK", 2, video, cursor, 0xA); // confirmation
 }
 
 //rm file.txt
 static void handle_rm_command(const char* filename, char* video, int* cursor, unsigned char color_unused) {
-    int idx = find_file(filename);
-    if (idx == -1) {
-        print_string("File not found", 14, video, cursor, 0xC); 
-        return;
+    int result = fs_rm(filename, 0);
+    if (result == -1) {
+        print_string("File not found or cannot remove root", 37, video, cursor, 0xC);
+    } else if (result == -2) {
+        print_string("Directory not empty. Use rmdir -r", 33, video, cursor, 0xC);
+    } else {
+        print_string("Removed", 7, video, cursor, 0xA);
     }
-    //index
-    for (int i = idx; i < file_count - 1; i++) {
-        for (int j = 0; j < MAX_FILE_NAME; j++) file_table[i].name[j] = file_table[i+1].name[j];
-        for (int j = 0; j < MAX_FILE_SIZE; j++) file_table[i].data[j] = file_table[i+1].data[j];
-        file_table[i].size = file_table[i+1].size;
-    }
-    file_count--;
-    print_string("Deleted", 7, video, cursor, 0xA); 
 }
 static int mini_strcmp(const char* a, const char* b) {
     int i = 0;
@@ -618,9 +970,6 @@ static int mini_strcmp(const char* a, const char* b) {
     }
     return a[i] - b[i];
 }
-
-static void print_string(const char* str, int len, char* video, int* cursor, unsigned char color);
-static void print_string_sameline(const char* str, int len, char* video, int* cursor, unsigned char color);
 
 // read byte from cmos
 static unsigned char cmos_read(unsigned char reg) {
@@ -674,18 +1023,15 @@ static void handle_clear_command(char* video, int* cursor) {
 
 //move rename file ~
 static void handle_mv_command(const char* oldname, const char* newname, char* video, int* cursor) {
-    int idx = find_file(oldname);
-    if (idx == -1) {
-        print_string("File not found", 14, video, cursor, 0xC);
+    int src_idx = resolve_path(oldname);
+    if (src_idx == -1) {
+        print_string("Source not found", 16, video, cursor, 0xC);
         return;
     }
-    int i = 0;
-    while (newname[i] && i < MAX_FILE_NAME - 1) {
-        file_table[idx].name[i] = newname[i];
-        i++;
-    }
-    file_table[idx].name[i] = 0;
-    print_string("File renamed", 12, video, cursor, 0xA);
+    
+    // Simple rename in same directory
+    str_copy(node_table[src_idx].name, newname, MAX_NAME_LENGTH);
+    print_string("Renamed", 7, video, cursor, 0xA);
 }
 
 
@@ -700,80 +1046,63 @@ static void handle_command(const char* cmd, char* video, int* cursor, const char
 
 //main command dispatcher
 static void handle_mkdir_command(const char* dirname, char* video, int* cursor, unsigned char color_unused) {
-    // Check if subdir exists in current dir
-    // Check if subdir exists in current dir
-    for (int i = 0; i < MAX_DIRS; i++) {
-        if (dir_table[i].used && dir_table[i].parent == current_dir && mini_strcmp(dir_table[i].name, dirname) == 0) {
-            print_string("Directory exists", 16, video, cursor, 0xC); 
-            return;
-        }
+    int result = fs_mkdir(dirname);
+    if (result == -1) {
+        print_string("Parent directory not found", 26, video, cursor, 0xC);
+    } else if (result == -2) {
+        print_string("Directory already exists", 24, video, cursor, 0xC);
+    } else if (result == -3) {
+        print_string("No space for new directory", 26, video, cursor, 0xC);
+    } else {
+        print_string("Directory created", 17, video, cursor, 0xA);
     }
-    int idx = -1;
-    for (int i = 1; i < MAX_DIRS; i++) { // start at 1, never overwrite root
-        if (!dir_table[i].used) {
-            idx = i;
-            break;
-        }
-    }
-    if (idx == -1) {
-        print_string("Dir table full", 14, video, cursor, 0xC); 
-        return;
-    }
-    int j = 0;
-    while (dirname[j] && j < MAX_DIR_NAME-1) {
-        dir_table[idx].name[j] = dirname[j];
-        j++;
-    }
-    dir_table[idx].name[j] = 0;
-    dir_table[idx].used = 1;
-    dir_table[idx].parent = current_dir;
-    if (idx >= dir_count) dir_count = idx + 1;
-    print_string("Dir created", 11, video, cursor, 0xA); 
 }
 
 static void handle_cd_command(const char* dirname, char* video, int* cursor, unsigned char color_unused) {
-    if (mini_strcmp(dirname, "..") == 0) {
-        if (current_dir == 0) {
-            print_string("Already at root", 15, video, cursor, 0xC); 
-            return;
-        }
-        current_dir = dir_table[current_dir].parent;
-        print_string("Changed dir", 11, video, cursor, 0xA); 
+    if (str_equal(dirname, "")) {
+        current_dir_idx = 0; // cd to root
+        print_string("Changed to /", 12, video, cursor, 0xA);
         return;
     }
-    for (int i = 0; i < dir_count; i++) {
-        if (dir_table[i].used && dir_table[i].parent == current_dir && mini_strcmp(dir_table[i].name, dirname) == 0) {
-            current_dir = i;
-            print_string("Changed dir", 11, video, cursor, 0xA); 
-            return;
-        }
+    
+    int target_idx = resolve_path(dirname);
+    if (target_idx == -1) {
+        print_string("Directory not found", 19, video, cursor, 0xC);
+        return;
     }
-    print_string("No such dir", 11, video, cursor, 0xC); 
+    
+    if (node_table[target_idx].type != NODE_DIRECTORY) {
+        print_string("Not a directory", 15, video, cursor, 0xC);
+        return;
+    }
+    
+    current_dir_idx = target_idx;
+    char path[MAX_PATH_LENGTH];
+    get_full_path(current_dir_idx, path, MAX_PATH_LENGTH);
+    print_string("Changed to: ", -1, video, cursor, 0xA);
+    print_string_sameline(path, -1, video, cursor, 0xA);
 }
 
 // Remove empty directory command
 static void handle_rmdir_command(const char* dirname, char* video, int* cursor) {
-    for (int i = 0; i < dir_count; i++) {
-        if (dir_table[i].used && dir_table[i].parent == current_dir && mini_strcmp(dir_table[i].name, dirname) == 0) {
-            // Check if directory is empty
-            for (int j = 0; j < dir_count; j++) {
-                if (dir_table[j].used && dir_table[j].parent == i) {
-                    print_string("Directory not empty", 20, video, cursor, 0xC);
-                    return;
-                }
-            }
-            for (int j = 0; j < file_count; j++) {
-                if (file_table[j].dir == i) {
-                    print_string("Directory not empty", 20, video, cursor, 0xC);
-                    return;
-                }
-            }
-            dir_table[i].used = 0;
-            print_string("Directory removed", 18, video, cursor, 0xA);
-            return;
-        }
+    int is_recursive = 0;
+    const char* path = dirname;
+    
+    // Check for -r flag
+    if (dirname[0] == '-' && dirname[1] == 'r' && dirname[2] == ' ') {
+        is_recursive = 1;
+        path = dirname + 3;
+        while (*path == ' ') path++;
     }
-    print_string("No such directory", 18, video, cursor, 0xC);
+    
+    int result = fs_rm(path, is_recursive);
+    if (result == -1) {
+        print_string("Directory not found", 19, video, cursor, 0xC);
+    } else if (result == -2) {
+        print_string("Directory not empty. Use -r flag", 32, video, cursor, 0xC);
+    } else {
+        print_string("Directory removed", 17, video, cursor, 0xA);
+    }
 }
 
 //integer to string utility
@@ -818,12 +1147,17 @@ static void handle_free_command(char* video, int* cursor) {
 
 // Filesystem usage summary command
 static void handle_df_command(char* video, int* cursor) {
-    char buf[64] = "Used files: ";
+    int used = 0;
+    for (int i = 0; i < MAX_NODES; i++) {
+        if (node_table[i].used) used++;
+    }
+    
+    char buf[64] = "Used nodes: ";
     char temp[12];
-    int_to_str(file_count, temp);
+    int_to_str(used, temp);
     str_concat(buf, temp);
-    str_concat(buf, ", Free: ");
-    int_to_str(MAX_FILES - file_count, temp);
+    str_concat(buf, "/");
+    int_to_str(MAX_NODES, temp);
     str_concat(buf, temp);
     print_string(buf, -1, video, cursor, 0xB);
 }
@@ -888,78 +1222,127 @@ static void handle_history_command(char* video, int* cursor) {
     }
 }
 
+static void handle_pwd_command(char* video, int* cursor) {
+    char path[MAX_PATH_LENGTH];
+    get_full_path(current_dir_idx, path, MAX_PATH_LENGTH);
+    print_string(path, -1, video, cursor, 0xB);
+}
+
+static void handle_touch_command(const char* filename, char* video, int* cursor) {
+    int result = fs_touch(filename, "");
+    if (result < 0) {
+        print_string("Cannot create file", 18, video, cursor, 0xC);
+    } else {
+        print_string("File created", 12, video, cursor, 0xA);
+    }
+}
+
+static void handle_tree_command(char* video, int* cursor) {
+    // Simple tree implementation
+    void print_tree(int node_idx, int depth, char* video, int* cursor) {
+        if (node_idx < 0 || node_idx >= MAX_NODES || !node_table[node_idx].used) return;
+        
+        // Print indentation
+        for (int i = 0; i < depth; i++) {
+            print_string_sameline("  ", 2, video, cursor, 0xB);
+        }
+        
+        if (node_table[node_idx].type == NODE_DIRECTORY) {
+            print_string(node_table[node_idx].name, -1, video, cursor, 0xB);
+            print_string_sameline("/", 1, video, cursor, 0xB);
+            
+            for (int i = 0; i < node_table[node_idx].child_count; i++) {
+                print_tree(node_table[node_idx].children_idx[i], depth + 1, video, cursor);
+            }
+        } else {
+            print_string(node_table[node_idx].name, -1, video, cursor, 0x0F);
+        }
+    }
+    
+    char path[MAX_PATH_LENGTH];
+    get_full_path(current_dir_idx, path, MAX_PATH_LENGTH);
+    print_string(path, -1, video, cursor, 0xE);
+    print_tree(current_dir_idx, 0, video, cursor);
+}
+
+static void handle_cp_command(const char* args, char* video, int* cursor) {
+    // Parse source and destination
+    char source[MAX_PATH_LENGTH], dest[MAX_PATH_LENGTH];
+    int i = 0, j = 0;
+    
+    while (args[i] == ' ') i++;
+    while (args[i] && args[i] != ' ') source[j++] = args[i++];
+    source[j] = 0;
+    
+    while (args[i] == ' ') i++;
+    j = 0;
+    while (args[i]) dest[j++] = args[i++];
+    dest[j] = 0;
+    
+    int src_idx = resolve_path(source);
+    if (src_idx == -1 || node_table[src_idx].type != NODE_FILE) {
+        print_string("Source file not found", 21, video, cursor, 0xC);
+        return;
+    }
+    
+    int result = fs_touch(dest, node_table[src_idx].content);
+    if (result < 0) {
+        print_string("Cannot create destination file", 30, video, cursor, 0xC);
+    } else {
+        node_table[result].content_size = node_table[src_idx].content_size;
+        print_string("File copied", 11, video, cursor, 0xA);
+    }
+}
+
 // Dispatch command
 static void dispatch_command(const char* cmd, char* video, int* cursor) {
-        // nano-like editor: edit filename.txt
-        if (cmd[0] == 'e' && cmd[1] == 'd' && cmd[2] == 'i' && cmd[3] == 't' && cmd[4] == ' ') {
-            int start = 5;
-            while (cmd[start] == ' ') start++;
-            char filename[MAX_FILE_NAME];
-            int fn = 0;
-            while (cmd[start] && fn < MAX_FILE_NAME-1) filename[fn++] = cmd[start++];
-            filename[fn] = 0;
-            nano_editor(filename, video, cursor);
-            return;
-        }
-    add_to_history(cmd); // Add the command to history
-    if (mini_strcmp(cmd, "ping") == 0) {
-        handle_command(cmd, video, cursor, "ping", "pong", 0xA); // confirmation
-    } else if (mini_strcmp(cmd, "about") == 0) {
-        handle_command(cmd, video, cursor, "about", "Smiggles v1.0.0 is an operating system that is lightweight, easy to use, and\ndesigned for the normal user and the skilled web developer.", 0xD); // help/about
-    } else if (mini_strcmp(cmd, "help") == 0) {
-        handle_command(cmd, video, cursor, "help", "Available commands:\nprint \"text\" (prints text)\necho \"text\" > file.txt (creates file)\nls (view all files)\ncat file.txt (read contents of file)\nrm file.txt (delete file)\nmkdir dirname (make dir)\ncd dirname (change dir)\nedit file.txt (nano editor)\ntime (displays time in UTC)\nclear/cls (clear screen)\nmv oldname newname (rename/move file)\nrmdir dirname (remove empty dir)\nfree (RAM/file table usage)\ndf (filesystem usage)\nver (version info)\nuptime (system uptime)\nhalt (shutdown)\nreboot (restart)\nhexdump file.txt (hex view of file)\nhistory (recent commands)", 0xD); // help/about
-    } else if (is_math_expr(cmd)) {
-        handle_calc_command(cmd, video, cursor);
-    } else if (mini_strcmp(cmd, "lsall") == 0) {
-        handle_lsall_command(video, cursor);
-    } else if (cmd[0] == 'm' && cmd[1] == 'k' && cmd[2] == 'd' && cmd[3] == 'i' && cmd[4] == 'r' && cmd[5] == ' ') {
-        int start = 6;
+    // nano-like editor: edit filename.txt
+    if (cmd[0] == 'e' && cmd[1] == 'd' && cmd[2] == 'i' && cmd[3] == 't' && cmd[4] == ' ') {
+        int start = 5;
         while (cmd[start] == ' ') start++;
-        char dirname[MAX_DIR_NAME];
-        int dn = 0;
-        while (cmd[start] && dn < MAX_DIR_NAME-1) {
-            dirname[dn++] = cmd[start++];
-        }
-        dirname[dn] = 0;
-        handle_mkdir_command(dirname, video, cursor, 0x0B);
+        char filename[MAX_FILE_NAME];
+        int fn = 0;
+        while (cmd[start] && fn < MAX_FILE_NAME-1) filename[fn++] = cmd[start++];
+        filename[fn] = 0;
+        nano_editor(filename, video, cursor);
+        return;
+    }
+    
+    add_to_history(cmd);
+    
+    if (mini_strcmp(cmd, "pwd") == 0) {
+        handle_pwd_command(video, cursor);
     } else if (cmd[0] == 'c' && cmd[1] == 'd' && cmd[2] == ' ') {
-        int start = 3;
-        while (cmd[start] == ' ') start++;
-        char dirname[MAX_DIR_NAME];
-        int dn = 0;
-        while (cmd[start] && dn < MAX_DIR_NAME-1) {
-            dirname[dn++] = cmd[start++];
-        }
-        dirname[dn] = 0;
-        handle_cd_command(dirname, video, cursor, 0x0B);
-    } else if (mini_strcmp(cmd, "time") == 0) {
-        handle_time_command(video, cursor, 0x0A);
+        handle_cd_command(cmd + 3, video, cursor, 0x0B);
+    } else if (cmd[0] == 'c' && cmd[1] == 'd' && cmd[2] == 0) {
+        handle_cd_command("", video, cursor, 0x0B);
     } else if (mini_strcmp(cmd, "ls") == 0) {
         handle_ls_command(video, cursor, 0x0B);
+    } else if (cmd[0] == 'm' && cmd[1] == 'k' && cmd[2] == 'd' && cmd[3] == 'i' && cmd[4] == 'r' && cmd[5] == ' ') {
+        handle_mkdir_command(cmd + 6, video, cursor, 0x0B);
+    } else if (cmd[0] == 't' && cmd[1] == 'o' && cmd[2] == 'u' && cmd[3] == 'c' && cmd[4] == 'h' && cmd[5] == ' ') {
+        handle_touch_command(cmd + 6, video, cursor);
     } else if (cmd[0] == 'c' && cmd[1] == 'a' && cmd[2] == 't' && cmd[3] == ' ') {
-        //handling stupid spaces
-        int start = 4;
-        while (cmd[start] == ' ') start++;
-        char filename[MAX_FILE_NAME];
-        int fn = 0;
-        while (cmd[start]) {
-            if (cmd[start] != ' ' && fn < MAX_FILE_NAME-1) filename[fn++] = cmd[start];
-            start++;
-        }
-        filename[fn] = 0;
-        handle_cat_command(filename, video, cursor, 0x0E);
+        handle_cat_command(cmd + 4, video, cursor, 0x0E);
+    } else if (cmd[0] == 'r' && cmd[1] == 'm' && cmd[2] == 'd' && cmd[3] == 'i' && cmd[4] == 'r' && cmd[5] == ' ') {
+        handle_rmdir_command(cmd + 6, video, cursor);
     } else if (cmd[0] == 'r' && cmd[1] == 'm' && cmd[2] == ' ') {
-        // rm file.txt
+        handle_rm_command(cmd + 3, video, cursor, 0x0C);
+    } else if (mini_strcmp(cmd, "tree") == 0) {
+        handle_tree_command(video, cursor);
+    } else if (cmd[0] == 'c' && cmd[1] == 'p' && cmd[2] == ' ') {
+        handle_cp_command(cmd + 3, video, cursor);
+    } else if (cmd[0] == 'm' && cmd[1] == 'v' && cmd[2] == ' ') {
         int start = 3;
         while (cmd[start] == ' ') start++;
-        char filename[MAX_FILE_NAME];
-        int fn = 0;
-        while (cmd[start]) {
-            if (cmd[start] != ' ' && fn < MAX_FILE_NAME-1) filename[fn++] = cmd[start];
-            start++;
-        }
-        filename[fn] = 0;
-        handle_rm_command(filename, video, cursor, 0x0C);
+        char oldname[MAX_FILE_NAME], newname[MAX_FILE_NAME];
+        int oi = 0, ni = 0;
+        while (cmd[start] && cmd[start] != ' ' && oi < MAX_FILE_NAME - 1) oldname[oi++] = cmd[start++];
+        oldname[oi] = 0;
+        while (cmd[start] == ' ') start++;
+        while (cmd[start] && ni < MAX_FILE_NAME - 1) newname[ni++] = cmd[start++];
+        newname[ni] = 0;
+        handle_mv_command(oldname, newname, video, cursor);
     } else if (cmd[0] == 'e' && cmd[1] == 'c' && cmd[2] == 'h' && cmd[3] == 'o' && cmd[4] == ' ') {
         //format: echo "text" > filename
         int quote_start = 5;
@@ -974,7 +1357,6 @@ static void dispatch_command(const char* cmd, char* video, int* cursor) {
             print_string("Bad echo syntax", 16, video, cursor, 0x0C);
             return;
         }
-        
         int gt = quote_end + 1;
         while (cmd[gt] && cmd[gt] != '>') gt++;
         if (cmd[gt] != '>') {
@@ -982,10 +1364,9 @@ static void dispatch_command(const char* cmd, char* video, int* cursor) {
             return;
         }
         int text_len = quote_end - (quote_start + 1);
-        char text[MAX_FILE_SIZE];
-        for (int i = 0; i < text_len && i < MAX_FILE_SIZE-1; i++) text[i] = cmd[quote_start + 1 + i];
+        char text[MAX_FILE_CONTENT];
+        for (int i = 0; i < text_len && i < MAX_FILE_CONTENT-1; i++) text[i] = cmd[quote_start + 1 + i];
         text[text_len] = 0;
-        //strip spaces
         char filename[MAX_FILE_NAME];
         int fn = 0;
         int fi = gt + 1;
@@ -995,21 +1376,20 @@ static void dispatch_command(const char* cmd, char* video, int* cursor) {
         }
         filename[fn] = 0;
         handle_echo_command(text, filename, video, cursor, 0x0A);
+    } else if (mini_strcmp(cmd, "ping") == 0) {
+        handle_command(cmd, video, cursor, "ping", "pong", 0xA);
+    } else if (mini_strcmp(cmd, "about") == 0) {
+        handle_command(cmd, video, cursor, "about", "Smiggles v1.0.0 is an operating system that is lightweight, easy to use, and\ndesigned for the normal user and the skilled web developer.", 0xD);
+    } else if (mini_strcmp(cmd, "help") == 0) {
+        handle_command(cmd, video, cursor, "help", "Available commands:\npwd (print working directory)\ncd <path> (change directory)\nls (list files/directories)\nmkdir <path> (make directory)\nrmdir [-r] <path> (remove directory)\ntouch <path> (create file)\ncat <path> (read file)\nrm <path> (remove file)\ncp <src> <dst> (copy file)\nmv <old> <new> (rename/move)\ntree (directory tree)\nedit <file> (nano editor)\necho \"text\" > <file> (write to file)\nprint \"text\" (print text)\ntime (UTC time)\nclear/cls (clear screen)\ndf (filesystem usage)\nver (version info)\nuptime (system uptime)\nhalt (shutdown)\nreboot (restart)\nhistory (command history)", 0xD);
+    } else if (is_math_expr(cmd)) {
+        handle_calc_command(cmd, video, cursor);
+    } else if (mini_strcmp(cmd, "lsall") == 0) {
+        handle_lsall_command(video, cursor);
+    } else if (mini_strcmp(cmd, "time") == 0) {
+        handle_time_command(video, cursor, 0x0A);
     } else if (mini_strcmp(cmd, "clear") == 0 || mini_strcmp(cmd, "cls") == 0) {
         handle_clear_command(video, cursor);
-    } else if (cmd[0] == 'm' && cmd[1] == 'v' && cmd[2] == ' ') {
-        int start = 3;
-        while (cmd[start] == ' ') start++;
-        char oldname[MAX_FILE_NAME], newname[MAX_FILE_NAME];
-        int oi = 0, ni = 0;
-        while (cmd[start] && cmd[start] != ' ' && oi < MAX_FILE_NAME - 1) oldname[oi++] = cmd[start++];
-        oldname[oi] = 0;
-        while (cmd[start] == ' ') start++;
-        while (cmd[start] && ni < MAX_FILE_NAME - 1) newname[ni++] = cmd[start++];
-        newname[ni] = 0;
-        handle_mv_command(oldname, newname, video, cursor);
-    } else if (mini_strcmp(cmd, "rmdir") == 0) {
-        handle_rmdir_command(cmd + 6, video, cursor);
     } else if (mini_strcmp(cmd, "free") == 0) {
         handle_free_command(video, cursor);
     } else if (mini_strcmp(cmd, "df") == 0) {
@@ -1026,6 +1406,13 @@ static void dispatch_command(const char* cmd, char* video, int* cursor) {
         handle_hexdump_command(cmd + 8, video, cursor);
     } else if (mini_strcmp(cmd, "history") == 0) {
         handle_history_command(video, cursor);
+    } else if (cmd[0] == 'p' && cmd[1] == 'r' && cmd[2] == 'i' && cmd[3] == 'n' && cmd[4] == 't' && cmd[5] == ' ' && cmd[6] == '"') {
+        int start = 7;
+        int end = start;
+        while (cmd[end] && cmd[end] != '"') end++;
+        if (cmd[end] == '"') {
+            print_string(&cmd[start], end - start, video, cursor, 0x0D);
+        }
     }
 }
 
@@ -1100,6 +1487,9 @@ int line_start = 0;
 int cmd_len = 0;
 int cmd_cursor = 0;
 void kernel_main(void) {
+    // Initialize filesystem FIRST
+    init_filesystem();
+    
     // --- Interrupt setup ---
     pic_remap();
     set_idt_entry(0x20, (unsigned int)irq0_timer_handler);
@@ -1138,9 +1528,9 @@ void kernel_main(void) {
     
     unsigned short pos = cursor;
     asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((uint16_t)0x3D4));
-    asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((uint16_t)0x3D5));
-    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((uint16_t)0x3D4));
-    asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos >> 8) & 0xFF)), "Nd"((uint16_t)0x3D5));
+    asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((unsigned short)0x3D5));
+    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
+    asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
 
     
     char cmd_buf[64];
@@ -1169,223 +1559,170 @@ void kernel_main(void) {
         }
 
         if (scancode > 0x80) {
-            int e0_prefix = 0;
+            prev_scancode = 0;
+            continue;
+        }
+        
+        if (scancode == prev_scancode || scancode == 0) continue;
+        prev_scancode = scancode;
+
+        // Handle E0 prefix for arrow keys
+        int e0_prefix = 0;
+        if (scancode == 0xE0) {
+            e0_prefix = 1;
+            // Get next scancode
             while (1) {
-                unsigned char scancode;
                 asm volatile("inb $0x60, %0" : "=a"(scancode));
+                if (scancode != 0xE0 && scancode != 0) break;
+            }
+        }
 
-                // Handle E0 prefix for arrow keys
-                if (scancode == 0xE0) {
-                    e0_prefix = 1;
-                    continue;
+        if (e0_prefix) {
+            if (scancode == 0x4B) { // Left arrow
+                if (cmd_cursor > 0) {
+                    cmd_cursor--;
+                    cursor--;
+                    unsigned short pos = cursor;
+                    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
+                    asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((unsigned short)0x3D5));
+                    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
+                    asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
                 }
+                continue;
+            } else if (scancode == 0x4D) { // Right arrow
+                if (cmd_cursor < cmd_len) {
+                    cmd_cursor++;
+                    cursor++;
+                    unsigned short pos = cursor;
+                    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
+                    asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((unsigned short)0x3D5));
+                    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
+                    asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
+                }
+                continue;
+            }
+            continue; // Ignore other E0 keys
+        }
 
-                //SHIFT KEYS
-                if (scancode == 0x2A || scancode == 0x36) { 
-                    shift = 1;
-                    continue;
-                }
-                if (scancode == 0xAA || scancode == 0xB6) { 
-                    shift = 0;
-                    continue;
-                }
+        char c = 0;
+        const char lower_table[128] = {
+            [0x02] = '1', [0x03] = '2', [0x04] = '3', [0x05] = '4', [0x06] = '5', [0x07] = '6',
+            [0x08] = '7', [0x09] = '8', [0x0A] = '9', [0x0B] = '0',
+            [0x0C] = '-', [0x0D] = '=',
+            [0x10] = 'q', [0x11] = 'w', [0x12] = 'e', [0x13] = 'r', [0x14] = 't', [0x15] = 'y',
+            [0x16] = 'u', [0x17] = 'i', [0x18] = 'o', [0x19] = 'p',
+            [0x1A] = '[', [0x1B] = ']', [0x1E] = 'a', [0x1F] = 's', [0x20] = 'd', [0x21] = 'f', [0x22] = 'g', [0x23] = 'h',
+            [0x24] = 'j', [0x25] = 'k', [0x26] = 'l', [0x27] = ';', [0x28] = '\'', [0x29] = '`',
+            [0x2B] = '\\', [0x2C] = 'z', [0x2D] = 'x', [0x2E] = 'c', [0x2F] = 'v', [0x30] = 'b', [0x31] = 'n', [0x32] = 'm',
+            [0x33] = ',', [0x34] = '.', [0x35] = '/', [0x39] = ' ', [0x1C] = '\n', [0x0E] = 8,
+            [0x0F] = '\t',
+            [0x4F] = '1', [0x50] = '2', [0x51] = '3', [0x4B] = '4', [0x4C] = '5', [0x4D] = '6', [0x47] = '7', [0x48] = '8', [0x49] = '9', [0x52] = '0',
+            [0x53] = '.', [0x37] = '*', [0x4A] = '-', [0x4E] = '+', [0x35] = '/',
+        };
+        const char upper_table[128] = {
+            [0x02] = '!', [0x03] = '@', [0x04] = '#', [0x05] = '$', [0x06] = '%', [0x07] = '^',
+            [0x08] = '&', [0x09] = '*', [0x0A] = '(', [0x0B] = ')',
+            [0x0C] = '_', [0x0D] = '+',
+            [0x10] = 'Q', [0x11] = 'W', [0x12] = 'E', [0x13] = 'R', [0x14] = 'T', [0x15] = 'Y',
+            [0x16] = 'U', [0x17] = 'I', [0x18] = 'O', [0x19] = 'P',
+            [0x1A] = '{', [0x1B] = '}', [0x1E] = 'A', [0x1F] = 'S', [0x20] = 'D', [0x21] = 'F', [0x22] = 'G', [0x23] = 'H',
+            [0x24] = 'J', [0x25] = 'K', [0x26] = 'L', [0x27] = ':', [0x28] = '"', [0x29] = '~',
+            [0x2B] = '|', [0x2C] = 'Z', [0x2D] = 'X', [0x2E] = 'C', [0x2F] = 'V', [0x30] = 'B', [0x31] = 'N', [0x32] = 'M',
+            [0x33] = '<', [0x34] = '>', [0x35] = '?', [0x39] = ' ', [0x1C] = '\n', [0x0E] = 8,
+            [0x0F] = '\t',
+            [0x4F] = '1', [0x50] = '2', [0x51] = '3', [0x4B] = '4', [0x4C] = '5', [0x4D] = '6', [0x47] = '7', [0x48] = '8', [0x49] = '9', [0x52] = '0',
+            [0x53] = '.', [0x37] = '*', [0x4A] = '-', [0x4E] = '+', [0x35] = '/',
+        };
 
-                if (scancode > 0x80) {
-                    prev_scancode = 0;
-                    e0_prefix = 0;
-                }
-                else if (scancode != prev_scancode && scancode != 0) {
-                    prev_scancode = scancode;
+        if (shift)
+            c = upper_table[scancode];
+        else
+            c = lower_table[scancode];
 
-                    // Handle left/right arrow keys (E0 4B and E0 4D)
-                    if (e0_prefix) {
-                        if (scancode == 0x4B) { // Left arrow
-                            if (cmd_cursor > 0) {
-                                cmd_cursor--;
-                                cursor--;
-                                // Move hardware cursor
-                                unsigned short pos = cursor;
-                                asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
-                                asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((unsigned short)0x3D5));
-                                asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
-                                asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
-                            }
-                            e0_prefix = 0;
-                            continue;
-                        } else if (scancode == 0x4D) { // Right arrow
-                            if (cmd_cursor < cmd_len) {
-                                cmd_cursor++;
-                                cursor++;
-                                // Move hardware cursor
-                                unsigned short pos = cursor;
-                                asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
-                                asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((unsigned short)0x3D5));
-                                asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
-                                asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
-                            }
-                            e0_prefix = 0;
-                            continue;
-                        }
-                        // Ignore other E0-prefixed keys for now
-                        e0_prefix = 0;
+        if (c) {
+            if (c == '\n') {
+                cmd_buf[cmd_len] = 0;
+                if (cmd_buf[0] == 'p' && cmd_buf[1] == 'r' && cmd_buf[2] == 'i' && cmd_buf[3] == 'n' && cmd_buf[4] == 't' && cmd_buf[5] == ' ' && cmd_buf[6] == '"') {
+                    int start = 7;
+                    int end = start;
+                    while (cmd_buf[end] && cmd_buf[end] != '"') end++;
+                    if (cmd_buf[end] == '"') {
+                        print_string(&cmd_buf[start], end - start, video, &cursor, 0x0D);
                     }
-
-                    char c = 0;
-                    const char lower_table[128] = {
-                        [0x02] = '1', [0x03] = '2', [0x04] = '3', [0x05] = '4', [0x06] = '5', [0x07] = '6',
-                        [0x08] = '7', [0x09] = '8', [0x0A] = '9', [0x0B] = '0',
-                        [0x0C] = '-', [0x0D] = '=',
-                        [0x10] = 'q', [0x11] = 'w', [0x12] = 'e', [0x13] = 'r', [0x14] = 't', [0x15] = 'y',
-                        [0x16] = 'u', [0x17] = 'i', [0x18] = 'o', [0x19] = 'p',
-                        [0x1A] = '[', [0x1B] = ']', [0x1E] = 'a', [0x1F] = 's', [0x20] = 'd', [0x21] = 'f', [0x22] = 'g', [0x23] = 'h',
-                        [0x24] = 'j', [0x25] = 'k', [0x26] = 'l', [0x27] = ';', [0x28] = '\'', [0x29] = '`',
-                        [0x2B] = '\\', [0x2C] = 'z', [0x2D] = 'x', [0x2E] = 'c', [0x2F] = 'v', [0x30] = 'b', [0x31] = 'n', [0x32] = 'm',
-                        [0x33] = ',', [0x34] = '.', [0x35] = '/', [0x39] = ' ', [0x1C] = '\n', [0x0E] = 8, // backspace
-                        [0x0F] = '\t',
-                        //numpad keys
-                        [0x4F] = '1', [0x50] = '2', [0x51] = '3', [0x4B] = '4', [0x4C] = '5', [0x4D] = '6', [0x47] = '7', [0x48] = '8', [0x49] = '9', [0x52] = '0',
-                        [0x53] = '.', [0x37] = '*', [0x4A] = '-', [0x4E] = '+', [0x35] = '/',
-                    };
-                    const char upper_table[128] = {
-                        [0x02] = '!', [0x03] = '@', [0x04] = '#', [0x05] = '$', [0x06] = '%', [0x07] = '^',
-                        [0x08] = '&', [0x09] = '*', [0x0A] = '(', [0x0B] = ')',
-                        [0x0C] = '_', [0x0D] = '+',
-                        [0x10] = 'Q', [0x11] = 'W', [0x12] = 'E', [0x13] = 'R', [0x14] = 'T', [0x15] = 'Y',
-                        [0x16] = 'U', [0x17] = 'I', [0x18] = 'O', [0x19] = 'P',
-                        [0x1A] = '{', [0x1B] = '}', [0x1E] = 'A', [0x1F] = 'S', [0x20] = 'D', [0x21] = 'F', [0x22] = 'G', [0x23] = 'H',
-                        [0x24] = 'J', [0x25] = 'K', [0x26] = 'L', [0x27] = ':', [0x28] = '"', [0x29] = '~',
-                        [0x2B] = '|', [0x2C] = 'Z', [0x2D] = 'X', [0x2E] = 'C', [0x2F] = 'V', [0x30] = 'B', [0x31] = 'N', [0x32] = 'M',
-                        [0x33] = '<', [0x34] = '>', [0x35] = '?', [0x39] = ' ', [0x1C] = '\n', [0x0E] = 8, // backspace
-                        [0x0F] = '\t',
-
-                        [0x4F] = '1', [0x50] = '2', [0x51] = '3', [0x4B] = '4', [0x4C] = '5', [0x4D] = '6', [0x47] = '7', [0x48] = '8', [0x49] = '9', [0x52] = '0',
-                        [0x53] = '.', [0x37] = '*', [0x4A] = '-', [0x4E] = '+', [0x35] = '/',
-                    };
-
-                    if (shift)
-                        c = upper_table[scancode];
-                    else
-                        c = lower_table[scancode];
-
-                    if (c) {
-                        if (c == '\n') {
-                            cmd_buf[cmd_len] = 0;
-                            // Print command: print "text"
-                            if (cmd_buf[0] == 'p' && cmd_buf[1] == 'r' && cmd_buf[2] == 'i' && cmd_buf[3] == 'n' && cmd_buf[4] == 't' && cmd_buf[5] == ' ' && cmd_buf[6] == '"') {
-                                // Find closing quote
-                                int start = 7;
-                                int end = start;
-                                while (cmd_buf[end] && cmd_buf[end] != '"') end++;
-                                if (cmd_buf[end] == '"') {
-                                    // Print the string between quotes
-                                    // Move cursor to new line before printing
-                                    print_string(&cmd_buf[start], end - start, video, &cursor, 0x0D);
-                                }
-                            } else {
-                                dispatch_command(cmd_buf, video, &cursor);
-                            }
-                            if (just_saved) {
-                                // nano_editor already printed the prompt, so skip printing it here
-                                just_saved = 0;
-                                line_start = cursor;
-                                cmd_len = 0;
-                                cmd_cursor = 0;
-                                continue;
-                            }
-                            extern int skip_next_prompt;
-                            if (skip_next_prompt) {
-                                skip_next_prompt = 0;
-                                line_start = cursor;
-                                continue;
-                            }
-                            // New prompt
-                            cursor = ((cursor / 80) + 1) * 80;
-                            if (cursor >= 80*25) {
-                                scroll_screen(video);
-                                cursor -= 80;
-                            }
-                            const char* prompt = "> ";
-                            int pi = 0;
-                            while (prompt[pi] && cursor < 80*25 - 1) {
-                                video[cursor*2] = prompt[pi];
-                                video[cursor*2+1] = 0x0F;
-                                cursor++;
-                                pi++;
-                            }
-                            // Update hardware cursor
-                            unsigned short pos_hw = cursor;
-                            asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
-                            asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos_hw & 0xFF)), "Nd"((unsigned short)0x3D5));
-                            asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
-                            asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos_hw >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
-                            line_start = cursor;
-                            cmd_len = 0;
-                            cmd_cursor = 0;
+                } else {
+                    dispatch_command(cmd_buf, video, &cursor);
+                }
+                // New prompt
+                cursor = ((cursor / 80) + 1) * 80;
+                if (cursor >= 80*25) {
+                    scroll_screen(video);
+                    cursor -= 80;
+                }
+                const char* prompt = "> ";
+                int pi = 0;
+                while (prompt[pi] && cursor < 80*25 - 1) {
+                    video[cursor*2] = prompt[pi];
+                    video[cursor*2+1] = 0x0F;
+                    cursor++;
+                    pi++;
+                }
+                unsigned short pos_hw = cursor;
+                asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
+                asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos_hw & 0xFF)), "Nd"((unsigned short)0x3D5));
+                asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
+                asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos_hw >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
+                line_start = cursor;
+                cmd_len = 0;
+                cmd_cursor = 0;
+            }
+            else if (c == 8) {
+                if (cmd_cursor > 0 && cmd_len > 0 && cursor > line_start) {
+                    for (int k = cmd_cursor-1; k < cmd_len-1; k++)
+                        cmd_buf[k] = cmd_buf[k+1];
+                    cmd_len--;
+                    cmd_cursor--;
+                    cursor--;
+                    int redraw = cursor;
+                    for (int k = 0; k < cmd_len-cmd_cursor; k++) {
+                        video[(redraw+k)*2] = cmd_buf[cmd_cursor+k];
+                        video[(redraw+k)*2+1] = 0x0F;
+                    }
+                    video[(line_start+cmd_len)*2] = ' ';
+                    video[(line_start+cmd_len)*2+1] = 0x07;
+                    unsigned short pos = cursor;
+                    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
+                    asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((unsigned short)0x3D5));
+                    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
+                    asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
+                }
+            }
+            else if (c == '\t' && cursor < 80*25 - 4) {
+                for (int t = 0; t < 4; t++) {
+                    video[cursor*2] = ' ';
+                    video[cursor*2+1] = 0x0F;
+                    cursor++;
+                }
+            }
+            else {
+                if (cursor % 80 == 0 && cursor != line_start && cursor < 80*25) {
+                    if (cursor >= 80*25) {
+                        scroll_screen(video);
+                        cursor -= 80;
+                    }
+                }
+                if (cursor < 80*25 - 1 && c != '\t') {
+                    if (cmd_len < 63) {
+                        for (int k = cmd_len; k > cmd_cursor; k--)
+                            cmd_buf[k] = cmd_buf[k-1];
+                        cmd_buf[cmd_cursor] = c;
+                        cmd_len++;
+                        int redraw = cursor;
+                        for (int k = 0; k < cmd_len-cmd_cursor; k++) {
+                            video[(redraw+k)*2] = cmd_buf[cmd_cursor+k];
+                            video[(redraw+k)*2+1] = 0x0F;
                         }
-                        else if (c == 8) {
-                            if (cmd_cursor > 0 && cmd_len > 0 && cursor > line_start) {
-                                // Shift buffer left from cursor
-                                for (int k = cmd_cursor-1; k < cmd_len-1; k++)
-                                    cmd_buf[k] = cmd_buf[k+1];
-                                cmd_len--;
-                                cmd_cursor--;
-                                cursor--;
-                                // Redraw input line
-                                int redraw = cursor;
-                                for (int k = 0; k < cmd_len-cmd_cursor; k++) {
-                                    video[(redraw+k)*2] = cmd_buf[cmd_cursor+k];
-                                    video[(redraw+k)*2+1] = 0x0F;
-                                }
-                                // Clear last char
-                                video[(line_start+cmd_len)*2] = ' ';
-                                video[(line_start+cmd_len)*2+1] = 0x07;
-                                // Move hardware cursor
-                                unsigned short pos = cursor;
-                                asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
-                                asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((unsigned short)0x3D5));
-                                asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
-                                asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
-                            }
-                        }
-                        else if (c == '\t' && cursor < 80*25 - 4) {
-                            for (int t = 0; t < 4; t++) {
-                                video[cursor*2] = ' ';
-                                video[cursor*2+1] = 0x0F;
-                                cursor++;
-                            }
-                        }
-                        else {
-                            // Allow input to flow to next line
-                            if (cursor % 80 == 0 && cursor != line_start && cursor < 80*25) {
-                                if (cursor >= 80*25) {
-                                    scroll_screen(video);
-                                    cursor -= 80;
-                                }
-                            }
-                            if (cursor < 80*25 - 1 && c != '\t') {
-                                if (cmd_len < 63) {
-                                    // Insert at cursor position
-                                    for (int k = cmd_len; k > cmd_cursor; k--)
-                                        cmd_buf[k] = cmd_buf[k-1];
-                                    cmd_buf[cmd_cursor] = c;
-                                    cmd_len++;
-                                    // Redraw input line
-                                    int redraw = cursor;
-                                    for (int k = 0; k < cmd_len-cmd_cursor; k++) {
-                                        video[(redraw+k)*2] = cmd_buf[cmd_cursor+k];
-                                        video[(redraw+k)*2+1] = 0x0F;
-                                    }
-                                    cursor++;
-                                    cmd_cursor++;
-                                    // Move hardware cursor
-                                    unsigned short pos = cursor;
-                                    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
-                                    asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((unsigned short)0x3D5));
-                                    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
-                                    asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
-                                }
-                            }
-                        }
+                        cursor++;
+                        cmd_cursor++;
                         unsigned short pos = cursor;
                         asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
                         asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((unsigned short)0x3D5));
