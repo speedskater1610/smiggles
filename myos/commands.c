@@ -262,18 +262,32 @@ static void handle_rmdir_command(const char* dirname, char* video, int* cursor) 
 }
 
 static void handle_free_command(char* video, int* cursor) {
-    char buf[64] = "Files: ";
+    // Count files and directories from node_table
+    int file_count_actual = 0;
+    int dir_count_actual = 0;
+    
+    for (int i = 0; i < MAX_NODES; i++) {
+        if (node_table[i].used) {
+            if (node_table[i].type == NODE_FILE) {
+                file_count_actual++;
+            } else if (node_table[i].type == NODE_DIRECTORY) {
+                dir_count_actual++;
+            }
+        }
+    }
+    
+    char buf[80] = "Files: ";
     char temp[12];
-    int_to_str(file_count, temp);
-    str_concat(buf, temp);
-    str_concat(buf, "/");
-    int_to_str(MAX_FILES, temp);
+    int_to_str(file_count_actual, temp);
     str_concat(buf, temp);
     str_concat(buf, ", Dirs: ");
-    int_to_str(dir_count, temp);
+    int_to_str(dir_count_actual, temp);
+    str_concat(buf, temp);
+    str_concat(buf, ", Total: ");
+    int_to_str(file_count_actual + dir_count_actual, temp);
     str_concat(buf, temp);
     str_concat(buf, "/");
-    int_to_str(MAX_DIRS, temp);
+    int_to_str(MAX_NODES, temp);
     str_concat(buf, temp);
     print_string(buf, -1, video, cursor, 0xB);
 }
