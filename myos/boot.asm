@@ -23,12 +23,19 @@ load_kernel:
     mov ah, 0x00
     int 0x13
     
+    ; Load the kernel starting at physical address 0x0010000.
+    ; Use ES:BX = 0x1000:0x0000 => 0x0010000.
+    mov ax, 0x1000
+    mov es, ax
+
     mov ah, 0x02
-    mov al, 54             ; 32 sectors = 16384 bytes
+    ; NOTE: This must be >= ceil(kernel.bin_size / 512).
+    ; kernel.bin is currently ~28 KiB, so 64 sectors (~32 KiB) is safe.
+    mov al, 64
     mov ch, 0
     mov cl, 2
     mov dh, 0
-    mov bx, 0x1000
+    mov bx, 0x0000
     int 0x13
     jc disk_error
 
@@ -67,7 +74,8 @@ protected_mode:
     mov gs, ax
     mov ss, ax
     mov esp, 0x90000
-    jmp 0x1000
+    ; Jump to kernel entry point at 0x0010000
+    jmp 0x10000
 
 msg db "Bootloader OK",13,10,0
 err db "Disk error",13,10,0

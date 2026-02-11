@@ -37,7 +37,7 @@ commands.o: commands.c
 	$(CC) -ffreestanding -c commands.c -o commands.o
 
 kernel.bin: kernel_entry.o kernel.o interrupts.o memory.o filesystem.o display.o calculator.o editor.o commands.o
-	$(LD) -Ttext 0x1000 kernel_entry.o kernel.o interrupts.o memory.o filesystem.o display.o calculator.o editor.o commands.o -o kernel.bin --oformat binary
+	$(LD) -Ttext 0x10000 kernel_entry.o kernel.o interrupts.o memory.o filesystem.o display.o calculator.o editor.o commands.o -o kernel.bin --oformat binary
 
 floppy.img: boot.bin kernel.bin
 	cat boot.bin kernel.bin > floppy.img
