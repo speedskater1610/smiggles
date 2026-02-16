@@ -55,11 +55,7 @@ void kernel_main(void) {
     line_start = cursor;
 
     
-    unsigned short pos = cursor;
-    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((uint16_t)0x3D4));
-    asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((unsigned short)0x3D5));
-    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
-    asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
+    set_cursor_position(cursor);
 
     
     char cmd_buf[64];
@@ -139,19 +135,11 @@ void kernel_main(void) {
                     cmd_cursor = cmd_len;
                     cursor = line_start + cmd_len;
                     
-                    unsigned short pos = cursor;
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((unsigned short)0x3D5));
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
+                    set_cursor_position(cursor);
                 } else if (cmd_cursor > 0) {
                     cmd_cursor--;
                     cursor--;
-                    unsigned short pos = cursor;
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((unsigned short)0x3D5));
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
+                    set_cursor_position(cursor);
                 }
                 // Wait for key release
                 while (1) {
@@ -184,19 +172,11 @@ void kernel_main(void) {
                     cmd_cursor = cmd_len;
                     cursor = line_start + cmd_len;
                     
-                    unsigned short pos = cursor;
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((unsigned short)0x3D5));
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
+                    set_cursor_position(cursor);
                 } else if (cmd_cursor < cmd_len) {
                     cmd_cursor++;
                     cursor++;
-                    unsigned short pos = cursor;
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((unsigned short)0x3D5));
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
+                    set_cursor_position(cursor);
                 }
                 // Wait for key release
                 while (1) {
@@ -231,11 +211,7 @@ void kernel_main(void) {
                     cmd_cursor = cmd_len;
                     cursor = line_start + cmd_len;
                     
-                    unsigned short pos = cursor;
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((unsigned short)0x3D5));
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
+                    set_cursor_position(cursor);
                 }
                 // Wait for key release
                 while (1) {
@@ -273,11 +249,7 @@ void kernel_main(void) {
                     cmd_cursor = cmd_len;
                     cursor = line_start + cmd_len;
                     
-                    unsigned short pos = cursor;
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((unsigned short)0x3D5));
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
+                    set_cursor_position(cursor);
                 }
                 // Wait for key release
                 while (1) {
@@ -290,38 +262,7 @@ void kernel_main(void) {
             continue; // Ignore other E0 keys
         }
 
-        char c = 0;
-        const char lower_table[128] = {
-            [0x02] = '1', [0x03] = '2', [0x04] = '3', [0x05] = '4', [0x06] = '5', [0x07] = '6',
-            [0x08] = '7', [0x09] = '8', [0x0A] = '9', [0x0B] = '0',
-            [0x0C] = '-', [0x0D] = '=',
-            [0x10] = 'q', [0x11] = 'w', [0x12] = 'e', [0x13] = 'r', [0x14] = 't', [0x15] = 'y',
-            [0x16] = 'u', [0x17] = 'i', [0x18] = 'o', [0x19] = 'p',
-            [0x1A] = '[', [0x1B] = ']', [0x1E] = 'a', [0x1F] = 's', [0x20] = 'd', [0x21] = 'f', [0x22] = 'g', [0x23] = 'h',
-            [0x24] = 'j', [0x25] = 'k', [0x26] = 'l', [0x27] = ';', [0x28] = '\'', [0x29] = '`',
-            [0x2B] = '\\', [0x2C] = 'z', [0x2D] = 'x', [0x2E] = 'c', [0x2F] = 'v', [0x30] = 'b', [0x31] = 'n', [0x32] = 'm',
-            [0x33] = ',', [0x34] = '.', [0x35] = '/', [0x39] = ' ', [0x1C] = '\n', [0x0E] = 8,
-            [0x0F] = '\t',
-            [0x37] = '*', [0x4A] = '-', [0x4E] = '+',
-        };
-        const char upper_table[128] = {
-            [0x02] = '!', [0x03] = '@', [0x04] = '#', [0x05] = '$', [0x06] = '%', [0x07] = '^',
-            [0x08] = '&', [0x09] = '*', [0x0A] = '(', [0x0B] = ')',
-            [0x0C] = '_', [0x0D] = '+',
-            [0x10] = 'Q', [0x11] = 'W', [0x12] = 'E', [0x13] = 'R', [0x14] = 'T', [0x15] = 'Y',
-            [0x16] = 'U', [0x17] = 'I', [0x18] = 'O', [0x19] = 'P',
-            [0x1A] = '{', [0x1B] = '}', [0x1E] = 'A', [0x1F] = 'S', [0x20] = 'D', [0x21] = 'F', [0x22] = 'G', [0x23] = 'H',
-            [0x24] = 'J', [0x25] = 'K', [0x26] = 'L', [0x27] = ':', [0x28] = '"', [0x29] = '~',
-            [0x2B] = '|', [0x2C] = 'Z', [0x2D] = 'X', [0x2E] = 'C', [0x2F] = 'V', [0x30] = 'B', [0x31] = 'N', [0x32] = 'M',
-            [0x33] = '<', [0x34] = '>', [0x35] = '?', [0x39] = ' ', [0x1C] = '\n', [0x0E] = 8,
-            [0x0F] = '\t',
-            [0x37] = '*', [0x4A] = '-', [0x4E] = '+',
-        };
-
-        if (shift)
-            c = upper_table[scancode];
-        else
-            c = lower_table[scancode];
+        char c = scancode_to_char(scancode, shift);
 
         if (c) {
             // Any key press deactivates tab completion mode
@@ -358,11 +299,7 @@ void kernel_main(void) {
                     cursor++;
                     pi++;
                 }
-                unsigned short pos_hw = cursor;
-                asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
-                asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos_hw & 0xFF)), "Nd"((unsigned short)0x3D5));
-                asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
-                asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos_hw >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
+                set_cursor_position(cursor);
                 line_start = cursor;
                 cmd_len = 0;
                 cmd_cursor = 0;
@@ -382,11 +319,7 @@ void kernel_main(void) {
                     }
                     video[(line_start+cmd_len)*2] = ' ';
                     video[(line_start+cmd_len)*2+1] = 0x07;
-                    unsigned short pos = cursor;
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((unsigned short)0x3D5));
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
-                    asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
+                    set_cursor_position(cursor);
                 }
             }
             else if (c == '\t' && cursor < 80*25 - 4) {
@@ -418,11 +351,7 @@ void kernel_main(void) {
                         }
                         cursor++;
                         cmd_cursor++;
-                        unsigned short pos = cursor;
-                        asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0F), "Nd"((unsigned short)0x3D4));
-                        asm volatile ("outb %0, %1" : : "a"((unsigned char)(pos & 0xFF)), "Nd"((unsigned short)0x3D5));
-                        asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0E), "Nd"((unsigned short)0x3D4));
-                        asm volatile ("outb %0, %1" : : "a"((unsigned char)((pos >> 8) & 0xFF)), "Nd"((unsigned short)0x3D5));
+                        set_cursor_position(cursor);
                     }
                 }
             }
