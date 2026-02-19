@@ -626,7 +626,29 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
     } else if (mini_strcmp(cmd, "about") == 0) {
         handle_command(cmd, video, cursor, "about", "Smiggles v1.0.0 is an operating system that is lightweight, easy to use, and\ndesigned for the normal user and the skilled web developer.", 0xD);
     } else if (mini_strcmp(cmd, "help") == 0) {
-        handle_command(cmd, video, cursor, "help", "Available commands:\npwd (print working directory)\ncd <path> (change directory)\nls (list files/directories)\nmkdir <path> (make directory)\nrmdir [-r] <path> (remove directory)\ntouch <path> (create file)\ncat <path> (read file)\nrm <path> (remove file)\ncp <src> <dst> (copy file)\nmv <old> <new> (rename/move)\ngrep <pattern> <file> (search in file)\ntree (directory tree)\nedit <file> (nano editor)\necho \"text\" > <file> (write to file)\nprint \"text\" (print text)\ntime (UTC time)\nclear/cls (clear screen)\ndf (filesystem usage)\nver (version info)\nuptime (system uptime)\nhalt (shutdown)\nreboot (restart)\nhistory (command history)", 0xD);
+        handle_command(cmd, video, cursor, "help",
+
+            "touch file.txt - create file\n"
+            "mkdir <path> - create directory\n"
+            "rmdir <path> - remove directory\n"
+            "cat file.txt - read file \n"
+            "rm <path> - remove file\n"
+            "cp <location> <destination> - copy file\n"
+            "mv <old> <new> - rename/move file\n"
+            "grep <pattern> <file> - search in file\n"
+            "tree - directory tree\n"
+            "edit <file> - text editor \n"
+            "echo \"text\" > <file> - write to file\n"
+            "print \"text\" - print text\n"
+            "time - UTC time\n"
+            "clear - clear screen\n"
+            "df - filesystem usage\n"
+            "ver - version info\n"
+            "uptime - system uptime\n"
+            "halt - shutdown\n"
+            "reboot - restart\n",
+            0xA);
+
     } else if (is_math_expr(cmd)) {
         handle_calc_command(cmd, video, cursor);
     } else if (mini_strcmp(cmd, "lsall") == 0) {
