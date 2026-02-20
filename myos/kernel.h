@@ -1,3 +1,5 @@
+#define FS_DISK_SECTOR 10 // Start sector for filesystem data
+#define FS_SECTOR_COUNT 8 // Number of sectors to use (4096 bytes)
 #ifndef KERNEL_H
 #define KERNEL_H
 
@@ -114,6 +116,10 @@ int resolve_path(const char* path);
 void get_full_path(int node_idx, char* path, int max_len);
 int parse_path(const char* path, char components[32][MAX_NAME_LENGTH], int* comp_count);
 
+// Persistent storage
+void fs_save(void);
+void fs_load(void);
+
 // String utilities
 int str_len(const char* s);
 void str_copy(char* dst, const char* src, int max);
@@ -149,4 +155,30 @@ unsigned char cmos_read(unsigned char reg);
 unsigned char bcd_to_bin(unsigned char bcd);
 void get_time_string(char* buf);
 
+// Disk I/O for persistent storage
+int disk_read_sector(unsigned int lba, void* buffer);
+int disk_write_sector(unsigned int lba, const void* buffer);
+
+// ATA PIO disk driver
+int ata_read_sector(unsigned int lba, void* buffer);
+int ata_write_sector(unsigned int lba, const void* buffer);
+
 #endif // KERNEL_H
+
+// I/O port functions for ATA
+static inline unsigned char inb(unsigned short port) {
+    unsigned char ret;
+    asm volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+static inline void outb(unsigned short port, unsigned char val) {
+    asm volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
+}
+static inline unsigned short inw(unsigned short port) {
+    unsigned short ret;
+    asm volatile ("inw %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+static inline void outw(unsigned short port, unsigned short val) {
+    asm volatile ("outw %0, %1" : : "a"(val), "Nd"(port));
+}

@@ -1,4 +1,37 @@
 #include "kernel.h"
+#include <stdint.h>
+
+// Simple memcpy for kernel use
+static void* my_memcpy(void* dest, const void* src, unsigned int n) {
+    unsigned char* d = (unsigned char*)dest;
+    const unsigned char* s = (const unsigned char*)src;
+    for (unsigned int i = 0; i < n; i++) d[i] = s[i];
+    return dest;
+}
+
+extern void print_string(const char* str, int len, char* video, int* cursor, unsigned char color);
+
+// Persistent filesystem state
+struct FSImage {
+    FSNode node_table[MAX_NODES];
+    int node_count;
+    int current_dir_idx;
+};
+
+static struct FSImage fs_image;
+
+// Update global variables from fs_image
+static void fsimage_to_globals() {
+    my_memcpy(node_table, fs_image.node_table, sizeof(node_table));
+    node_count = fs_image.node_count;
+    current_dir_idx = fs_image.current_dir_idx;
+}
+// Update fs_image from global variables
+static void globals_to_fsimage() {
+    my_memcpy(fs_image.node_table, node_table, sizeof(node_table));
+    fs_image.node_count = node_count;
+    fs_image.current_dir_idx = current_dir_idx;
+}
 
 // --- Global Variables ---
 FSNode node_table[MAX_NODES];
@@ -259,7 +292,9 @@ int fs_mkdir(const char* path) {
     node_table[parent_idx].children_idx[node_table[parent_idx].child_count++] = new_idx;
     if (new_idx >= node_count) node_count = new_idx + 1;
     
-    return new_idx;
+    int ret = new_idx;
+    fs_save();
+    return ret;
 }
 
 int fs_touch(const char* path, const char* content) {
@@ -333,7 +368,9 @@ int fs_touch(const char* path, const char* content) {
     node_table[parent_idx].children_idx[node_table[parent_idx].child_count++] = new_idx;
     if (new_idx >= node_count) node_count = new_idx + 1;
     
-    return new_idx;
+    int ret = new_idx;
+    fs_save();
+    return ret;
 }
 
 int fs_rm(const char* path, int recursive) {
@@ -369,4 +406,31 @@ int fs_rm(const char* path, int recursive) {
     
     node_table[node_idx].used = 0;
     return 0;
+}
+
+
+// Save the entire node_table and related variables to disk
+void fs_save() {
+    globals_to_fsimage();
+    unsigned char* buf = (unsigned char*)&fs_image;
+    int ok = 1;
+    for (int i = 0; i < FS_SECTOR_COUNT; i++) {
+        if (disk_write_sector(FS_DISK_SECTOR + i, buf + i * 512) != 0) {
+            ok = 0;
+        }
+    }
+}
+
+// Load the node_table and related variables from disk
+void fs_load() {
+    unsigned char* buf = (unsigned char*)&fs_image;
+    int ok = 1;
+    for (int i = 0; i < FS_SECTOR_COUNT; i++) {
+        if (disk_read_sector(FS_DISK_SECTOR + i, buf + i * 512) != 0) {
+            ok = 0;
+        }
+    }
+    if (ok) {
+        fsimage_to_globals();
+    }
 }

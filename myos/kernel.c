@@ -14,9 +14,20 @@ void kernel_main(void) {
     // Initialize basic paging and frame allocator (virtual memory foundation)
     init_paging();
 
-    // Initialize filesystem FIRST
-    init_filesystem();
-    
+    // Try to load filesystem from disk; if it fails, initialize a new one
+    int fs_ok = 1;
+    unsigned char* buf = (unsigned char*)node_table;
+    for (int i = 0; i < FS_SECTOR_COUNT; i++) {
+        if (disk_read_sector(FS_DISK_SECTOR + i, buf + i * 512) != 0) {
+            fs_ok = 0;
+            break;
+        }
+    }
+    if (!fs_ok) {
+        init_filesystem();
+        fs_save();
+    }
+
     // --- Interrupt setup ---
     pic_remap();
     set_idt_entry(0x20, (unsigned int)irq0_timer_handler);
