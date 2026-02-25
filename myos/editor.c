@@ -1,11 +1,11 @@
 #include "kernel.h"
 
 // --- Global Variables ---
-RamFile file_table[MAX_FILES];
-int file_count = 0;
+// file_table and file_count removed; use node_table only
 
 // --- Nano-like Text Editor ---
 void nano_editor(const char* filename, char* video, int* cursor) {
+    fs_load(); // Always reload from disk before editing
     int node_idx = resolve_path(filename);
     if (node_idx == -1 || node_table[node_idx].type != NODE_FILE) {
         // Create file if it doesn't exist
@@ -14,14 +14,20 @@ void nano_editor(const char* filename, char* video, int* cursor) {
             print_string("Cannot create file", 18, video, cursor, 0xC);
             return;
         }
+        // Re-resolve node_idx after creation
+        node_idx = resolve_path(filename);
+        if (node_idx == -1 || node_table[node_idx].type != NODE_FILE) {
+            print_string("File error", 10, video, cursor, 0xC);
+            return;
+        }
     }
-    
     char* buf = node_table[node_idx].content;
     // Save the current screen and cursor
     char prev_screen[80*25*2];
     for (int i = 0; i < 80*25*2; ++i) prev_screen[i] = video[i];
     int prev_cursor = *cursor;
     int pos = node_table[node_idx].content_size;
+    if (pos < 0 || pos > MAX_FILE_CONTENT - 1) pos = 0;
     int editing = 1;
     int maxlen = MAX_FILE_CONTENT - 1;
     
@@ -76,8 +82,11 @@ void nano_editor(const char* filename, char* video, int* cursor) {
         if (scancode == 0x2A || scancode == 0x36) { shift = 1; continue; }
         if (scancode == 0x1D) { ctrl = 1; continue; }
         if (ctrl && scancode == 0x1F) { // Ctrl+S: Save
-            node_table[node_idx].content_size = pos;
+            if (pos < 0) pos = 0;
+            if (pos > MAX_FILE_CONTENT - 1) pos = MAX_FILE_CONTENT - 1;
             buf[pos] = 0;
+            node_table[node_idx].content_size = pos;
+            fs_save();
             while (1) {
                 unsigned char sc;
                 asm volatile("inb $0x60, %0" : "=a"(sc));

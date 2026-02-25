@@ -1,3 +1,4 @@
+
 #include "kernel.h"
 #include <stdint.h>
 
@@ -16,7 +17,12 @@ struct FSImage {
     FSNode node_table[MAX_NODES];
     int node_count;
     int current_dir_idx;
-};
+    RamDir dir_table[MAX_DIRS];
+    int dir_count;
+    int current_dir;
+    } __attribute__((packed));
+
+// NOTE: To check persistent image size, print sizeof(struct FSImage) in a test program or with a build-time assert in a C file where both struct FSImage and FS_SECTOR_COUNT are visible.
 
 static struct FSImage fs_image;
 
@@ -25,12 +31,18 @@ static void fsimage_to_globals() {
     my_memcpy(node_table, fs_image.node_table, sizeof(node_table));
     node_count = fs_image.node_count;
     current_dir_idx = fs_image.current_dir_idx;
+    my_memcpy(dir_table, fs_image.dir_table, sizeof(dir_table));
+    dir_count = fs_image.dir_count;
+    current_dir = fs_image.current_dir;
 }
 // Update fs_image from global variables
 static void globals_to_fsimage() {
     my_memcpy(fs_image.node_table, node_table, sizeof(node_table));
     fs_image.node_count = node_count;
     fs_image.current_dir_idx = current_dir_idx;
+    my_memcpy(fs_image.dir_table, dir_table, sizeof(dir_table));
+    fs_image.dir_count = dir_count;
+    fs_image.current_dir = current_dir;
 }
 
 // --- Global Variables ---
@@ -298,6 +310,10 @@ int fs_mkdir(const char* path) {
 }
 
 int fs_touch(const char* path, const char* content) {
+        // Debug print before fs_save
+        volatile char* vga = (volatile char*)0xB8000;
+        const char* msg1 = "Before fs_save";
+        for (int j = 0; msg1[j]; j++) { vga[j*2] = msg1[j]; vga[j*2+1] = 0x2F; }
     char parent_path[MAX_PATH_LENGTH];
     char filename[MAX_NAME_LENGTH];
     
@@ -342,8 +358,12 @@ int fs_touch(const char* path, const char* content) {
         }
     }
     
-    if (new_idx == -1 || node_table[parent_idx].child_count >= MAX_CHILDREN) {
+    if (new_idx == -1) {
         return -3;
+    }
+    if (node_table[parent_idx].child_count >= MAX_CHILDREN) {
+        // Too many files in this directory
+        return -4;
     }
     
     node_table[new_idx].used = 1;
@@ -370,6 +390,9 @@ int fs_touch(const char* path, const char* content) {
     
     int ret = new_idx;
     fs_save();
+    // Debug print after fs_save
+    const char* msg2 = "After fs_save";
+    for (int j = 0; msg2[j]; j++) { vga[40+j*2] = msg2[j]; vga[40+j*2+1] = 0x2F; }
     return ret;
 }
 
@@ -410,25 +433,48 @@ int fs_rm(const char* path, int recursive) {
 
 
 // Save the entire node_table and related variables to disk
+
+
 void fs_save() {
     globals_to_fsimage();
-    unsigned char* buf = (unsigned char*)&fs_image;
+    unsigned char sector_buf[512];
+    unsigned char* img_ptr = (unsigned char*)&fs_image;
     int ok = 1;
     for (int i = 0; i < FS_SECTOR_COUNT; i++) {
-        if (disk_write_sector(FS_DISK_SECTOR + i, buf + i * 512) != 0) {
+        // Zero out the buffer for the last sector
+        for (int j = 0; j < 512; j++) sector_buf[j] = 0;
+        int offset = i * 512;
+        int to_copy = sizeof(fs_image) - offset;
+        if (to_copy > 512) to_copy = 512;
+        if (to_copy > 0)
+            my_memcpy(sector_buf, img_ptr + offset, to_copy);
+        if (disk_write_sector(FS_DISK_SECTOR + i, sector_buf) != 0) {
             ok = 0;
+            volatile char* vga = (volatile char*)0xB8000;
+            const char* msg = "Disk write error!";
+            for (int j = 0; msg[j]; j++) {
+                vga[j*2] = msg[j];
+                vga[j*2+1] = 0x4F;
+            }
+            while (1) { __asm__("hlt"); }
         }
     }
 }
 
 // Load the node_table and related variables from disk
 void fs_load() {
-    unsigned char* buf = (unsigned char*)&fs_image;
+    unsigned char sector_buf[512];
+    unsigned char* img_ptr = (unsigned char*)&fs_image;
     int ok = 1;
     for (int i = 0; i < FS_SECTOR_COUNT; i++) {
-        if (disk_read_sector(FS_DISK_SECTOR + i, buf + i * 512) != 0) {
+        if (disk_read_sector(FS_DISK_SECTOR + i, sector_buf) != 0) {
             ok = 0;
         }
+        int offset = i * 512;
+        int to_copy = sizeof(fs_image) - offset;
+        if (to_copy > 512) to_copy = 512;
+        if (to_copy > 0)
+            my_memcpy(img_ptr + offset, sector_buf, to_copy);
     }
     if (ok) {
         fsimage_to_globals();

@@ -5,7 +5,7 @@ SECTIONS
     . = 0x1000;
 
     .text ALIGN(4) : {
-        *(.multiboot)   /* If you ever add a multiboot header */
+        *(.multiboot)
         *(.text)
     }
 
@@ -19,4 +19,10 @@ SECTIONS
         *(COMMON)
         __bss_end = .;
     }
+
+    /* Reserve 64 KB for the stack at 0x90000 */
+    . = 0x90000;
+    stack_top = .;
+    . = . + 0x10000; /* 64 KB stack */
+    stack_bottom = .;
 }

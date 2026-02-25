@@ -1,5 +1,8 @@
 #define FS_DISK_SECTOR 10 // Start sector for filesystem data
-#define FS_SECTOR_COUNT 8 // Number of sectors to use (4096 bytes)
+// Increase sector count to fit the full fs_image struct (calculate: sizeof(FSNode)*MAX_NODES + sizeof(RamDir)*MAX_DIRS + ints)
+#define FS_SECTOR_COUNT 56 // 56*512 = 28672 bytes, enough for all metadata and files
+
+// Static assert to ensure persistent image is large enough for FSImage
 #ifndef KERNEL_H
 #define KERNEL_H
 
@@ -9,8 +12,8 @@
 #define MAX_PATH_LENGTH 128
 #define MAX_NAME_LENGTH 32
 #define MAX_CHILDREN 16
-#define MAX_NODES 64
-#define MAX_FILE_CONTENT 256
+#define MAX_NODES 8
+#define MAX_FILE_CONTENT 64
 #define MAX_FILE_NAME 32
 #define MAX_FILES 8
 #define MAX_FILE_SIZE 128
@@ -52,13 +55,13 @@ typedef struct FSNode {
     char content[MAX_FILE_CONTENT];
     int content_size;
     int used;
-} FSNode;
+    } __attribute__((packed)) FSNode;
 
 typedef struct {
     char name[MAX_DIR_NAME];
     int used;
     int parent;
-} RamDir;
+    } __attribute__((packed)) RamDir;
 
 typedef struct {
     char name[MAX_FILE_NAME];
@@ -78,8 +81,6 @@ extern int current_dir_idx;
 extern RamDir dir_table[MAX_DIRS];
 extern int dir_count;
 extern int current_dir;
-extern RamFile file_table[MAX_FILES];
-extern int file_count;
 extern char history[10][64];
 extern int history_count;
 extern int line_start;

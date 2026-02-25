@@ -62,17 +62,7 @@ void add_to_history(const char* cmd) {
 }
 
 // --- Utility Functions ---
-int find_file(const char* name) {
-    int nstart = 0;
-    while (name[nstart] == ' ') nstart++;
-    for (int i = 0; i < file_count; i++) {
-        if (file_table[i].dir != current_dir) continue;
-        int j = 0;
-        while (name[nstart + j] && file_table[i].name[j] && name[nstart + j] == file_table[i].name[j]) j++;
-        if ((!name[nstart + j] || name[nstart + j] == ' ') && !file_table[i].name[j]) return i;
-    }
-    return -1;
-}
+// find_file removed; use resolve_path and node_table for all file lookups
 
 // --- Command Handlers ---
 static void handle_command(const char* cmd, char* video, int* cursor, const char* input, const char* output, unsigned char color) {
@@ -134,20 +124,25 @@ static void handle_cat_command(const char* filename, char* video, int* cursor, u
         print_string("File not found", 14, video, cursor, 0xC);
         return;
     }
-    
     if (node_table[node_idx].type != NODE_FILE) {
         print_string("Not a file", 10, video, cursor, 0xC);
         return;
     }
-    
     print_string(node_table[node_idx].content, node_table[node_idx].content_size, video, cursor, 0xB);
 }
 
 static void handle_echo_command(const char* text, const char* filename, char* video, int* cursor, unsigned char color_unused) {
+        // Debug print before fs_save
+        volatile char* vga = (volatile char*)0xB8000;
+        const char* msg1 = "Before fs_save";
+        for (int j = 0; msg1[j]; j++) { vga[j*2] = msg1[j]; vga[j*2+1] = 0x2F; }
     int node_idx = resolve_path(filename);
     if (node_idx == -1) {
         node_idx = fs_touch(filename, text);
-    } else if (node_table[node_idx].type == NODE_FILE) {
+        fs_load(); // Ensure in-memory state matches disk after creation
+        node_idx = resolve_path(filename);
+    }
+    if (node_idx >= 0 && node_table[node_idx].type == NODE_FILE) {
         int len = 0;
         while (text[len] && len < MAX_FILE_CONTENT - 1) {
             node_table[node_idx].content[len] = text[len];
@@ -155,12 +150,14 @@ static void handle_echo_command(const char* text, const char* filename, char* vi
         }
         node_table[node_idx].content[len] = 0;
         node_table[node_idx].content_size = len;
-    }
-    
-    if (node_idx < 0) {
-        print_string("Cannot write file", 17, video, cursor, 0xC);
-    } else {
+        fs_save();
+        // Debug print after fs_save
+        const char* msg2 = "After fs_save";
+        for (int j = 0; msg2[j]; j++) { vga[40+j*2] = msg2[j]; vga[40+j*2+1] = 0x2F; }
+        fs_load(); // Ensure in-memory state matches disk after write
         print_string("OK", 2, video, cursor, 0xA);
+    } else {
+        print_string("Cannot write file", 17, video, cursor, 0xC);
     }
 }
 
@@ -343,14 +340,14 @@ static void byte_to_hex(unsigned char byte, char* buf) {
 }
 
 static void handle_hexdump_command(const char* filename, char* video, int* cursor) {
-    int idx = find_file(filename);
-    if (idx == -1) {
+    int node_idx = resolve_path(filename);
+    if (node_idx == -1 || node_table[node_idx].type != NODE_FILE) {
         print_string("File not found", 14, video, cursor, 0xC);
         return;
     }
     char buf[4];
-    for (int i = 0; i < file_table[idx].size; i++) {
-        byte_to_hex((unsigned char)file_table[idx].data[i], buf);
+    for (int i = 0; i < node_table[node_idx].content_size; i++) {
+        byte_to_hex((unsigned char)node_table[node_idx].content[i], buf);
         print_string(buf, -1, video, cursor, 0xB);
     }
 }

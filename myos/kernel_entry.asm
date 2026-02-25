@@ -10,6 +10,7 @@
 [EXTERN keyboard_handler]
 
 _start:
+    mov esp, 0x90000
     call kernel_main
     cli
     hlt
