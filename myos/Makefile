@@ -42,8 +42,10 @@ diskio.o: diskio.c
 ata.o: ata.c
 	$(CC) -ffreestanding -c ata.c -o ata.o
 
-kernel.bin: kernel_entry.o kernel.o interrupts.o memory.o filesystem.o display.o calculator.o editor.o commands.o diskio.o ata.o
-	$(LD) -Ttext 0x10000 kernel_entry.o kernel.o interrupts.o memory.o filesystem.o display.o calculator.o editor.o commands.o diskio.o ata.o -o kernel.bin --oformat binary
+kernel.bin: kernel_entry.o kernel.o interrupts.o memory.o filesystem.o display.o calculator.o editor.o commands.o diskio.o ata.o process.o
+	$(LD) -Ttext 0x10000 kernel_entry.o kernel.o interrupts.o memory.o filesystem.o display.o calculator.o editor.o commands.o diskio.o ata.o process.o -o kernel.bin --oformat binary
+process.o: process.c
+	$(CC) -ffreestanding -c process.c -o process.o
 
 floppy.img: boot.bin kernel.bin
 	cat boot.bin kernel.bin > floppy.img

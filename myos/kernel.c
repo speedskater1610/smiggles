@@ -97,6 +97,7 @@ void kernel_main(void) {
     asm volatile ("outb %0, %1" : : "a"((unsigned char)0x0B), "Nd"((unsigned short)0x3D4));
     asm volatile ("outb %0, %1" : : "a"((unsigned char)15), "Nd"((unsigned short)0x3D5));
 
+    // Continue with normal kernel loop
     while (1) {
         unsigned char scancode;
         asm volatile("inb $0x60, %0" : "=a"(scancode));

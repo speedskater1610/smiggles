@@ -20,6 +20,45 @@
 #define MAX_DIRS 4
 #define MAX_DIR_NAME 32
 
+// --- Process Management ---
+#define MAX_PROCESSES 8
+typedef enum {
+    PROC_UNUSED = 0,
+    PROC_READY,
+    PROC_RUNNING,
+    PROC_BLOCKED,
+    PROC_EXITED
+} ProcessState;
+
+typedef struct {
+    int pid;
+    ProcessState state;
+    unsigned int esp;
+    unsigned int eip;
+    unsigned int stack_base;
+    unsigned int stack_size;
+    unsigned int regs[8];
+} PCB;
+
+extern PCB process_table[MAX_PROCESSES];
+extern int current_process;
+void init_process_table(void);
+
+// Create a new process
+int process_create(unsigned int entry_point);
+
+// Switch context between two processes
+void context_switch(int from_pid, int to_pid);
+
+// Simple round-robin scheduler
+void schedule(void);
+
+// Terminate current process
+void process_exit(void);
+
+// Voluntarily yield CPU
+void process_yield(void);
+
 // --- Interrupt Definitions ---
 #define PIC1_COMMAND 0x20
 #define PIC1_DATA    0x21
