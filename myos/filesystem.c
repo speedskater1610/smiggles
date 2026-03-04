@@ -16,6 +16,14 @@ extern void print_string(const char* str, int len, char* video, int* cursor, uns
 #define FS_IMAGE_MAGIC 0x534D4947u
 #define FS_IMAGE_VERSION 5u
 
+#define FS_SLOT_COUNT 2
+#define FS_SLOT_HEADER_SECTORS 1
+#define FS_SLOT_TOTAL_SECTORS (FS_SECTOR_COUNT / FS_SLOT_COUNT)
+#define FS_SLOT_DATA_SECTORS (FS_SLOT_TOTAL_SECTORS - FS_SLOT_HEADER_SECTORS)
+
+#define FS_SLOT_MAGIC 0x534C4F54u /* 'SLOT' */
+#define FS_SLOT_VERSION 1u
+
 struct FSImage {
     uint32_t magic;
     uint32_t version;
@@ -28,12 +36,121 @@ struct FSImage {
     } __attribute__((packed));
 
 typedef char fs_image_must_fit_in_reserved_sectors[
-    (sizeof(struct FSImage) <= (FS_SECTOR_COUNT * 512)) ? 1 : -1
+    (sizeof(struct FSImage) <= (FS_SLOT_DATA_SECTORS * 512)) ? 1 : -1
 ];
 
-// NOTE: To check persistent image size, print sizeof(struct FSImage) in a test program or with a build-time assert in a C file where both struct FSImage and FS_SECTOR_COUNT are visible.
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t generation;
+    uint32_t payload_size;
+    uint32_t checksum;
+} __attribute__((packed)) FSSlotHeader;
 
+static struct FSImage fs_slot_temp;
 static struct FSImage fs_image;
+static uint32_t fs_active_generation = 0;
+
+static void fsimage_to_globals(void);
+static void globals_to_fsimage(void);
+
+static uint32_t fs_checksum(const unsigned char* data, int len) {
+    uint32_t hash = 2166136261u;
+    for (int i = 0; i < len; i++) {
+        hash ^= data[i];
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+static int fs_slot_base_sector(int slot) {
+    return FS_DISK_SECTOR + slot * FS_SLOT_TOTAL_SECTORS;
+}
+
+static int fs_read_slot_header(int slot, FSSlotHeader* header_out) {
+    if (!header_out || slot < 0 || slot >= FS_SLOT_COUNT) return 0;
+    unsigned char sector_buf[512];
+    if (disk_read_sector(fs_slot_base_sector(slot), sector_buf) != 0) return 0;
+    my_memcpy(header_out, sector_buf, sizeof(FSSlotHeader));
+    if (header_out->magic != FS_SLOT_MAGIC) return 0;
+    if (header_out->version != FS_SLOT_VERSION) return 0;
+    if (header_out->payload_size != sizeof(struct FSImage)) return 0;
+    return 1;
+}
+
+static int fs_read_slot_image(int slot, struct FSImage* image_out) {
+    if (!image_out || slot < 0 || slot >= FS_SLOT_COUNT) return 0;
+    unsigned char sector_buf[512];
+    unsigned char* dst = (unsigned char*)image_out;
+
+    for (int i = 0; i < FS_SLOT_DATA_SECTORS; i++) {
+        if (disk_read_sector(fs_slot_base_sector(slot) + FS_SLOT_HEADER_SECTORS + i, sector_buf) != 0) {
+            return 0;
+        }
+        int offset = i * 512;
+        int to_copy = sizeof(struct FSImage) - offset;
+        if (to_copy <= 0) break;
+        if (to_copy > 512) to_copy = 512;
+        my_memcpy(dst + offset, sector_buf, to_copy);
+    }
+    return 1;
+}
+
+static int fs_write_slot_image(int slot, const struct FSImage* image) {
+    if (!image || slot < 0 || slot >= FS_SLOT_COUNT) return 0;
+    unsigned char sector_buf[512];
+    const unsigned char* src = (const unsigned char*)image;
+
+    for (int i = 0; i < FS_SLOT_DATA_SECTORS; i++) {
+        for (int j = 0; j < 512; j++) sector_buf[j] = 0;
+        int offset = i * 512;
+        int to_copy = sizeof(struct FSImage) - offset;
+        if (to_copy <= 0) {
+            if (disk_write_sector(fs_slot_base_sector(slot) + FS_SLOT_HEADER_SECTORS + i, sector_buf) != 0) {
+                return 0;
+            }
+            continue;
+        }
+        if (to_copy > 512) to_copy = 512;
+        my_memcpy(sector_buf, src + offset, to_copy);
+        if (disk_write_sector(fs_slot_base_sector(slot) + FS_SLOT_HEADER_SECTORS + i, sector_buf) != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int fs_write_slot_header(int slot, const FSSlotHeader* header) {
+    if (!header || slot < 0 || slot >= FS_SLOT_COUNT) return 0;
+    unsigned char sector_buf[512];
+    for (int i = 0; i < 512; i++) sector_buf[i] = 0;
+    my_memcpy(sector_buf, header, sizeof(FSSlotHeader));
+    return disk_write_sector(fs_slot_base_sector(slot), sector_buf) == 0;
+}
+
+static int fs_load_legacy_single_image(void) {
+    unsigned char sector_buf[512];
+    unsigned char* img_ptr = (unsigned char*)&fs_image;
+    int ok = 1;
+    for (int i = 0; i < FS_SLOT_DATA_SECTORS; i++) {
+        if (disk_read_sector(FS_DISK_SECTOR + i, sector_buf) != 0) {
+            ok = 0;
+            break;
+        }
+        int offset = i * 512;
+        int to_copy = sizeof(fs_image) - offset;
+        if (to_copy <= 0) break;
+        if (to_copy > 512) to_copy = 512;
+        my_memcpy(img_ptr + offset, sector_buf, to_copy);
+    }
+    if (!ok) return 0;
+    if (fs_image.magic != FS_IMAGE_MAGIC || fs_image.version != FS_IMAGE_VERSION) return 0;
+    fsimage_to_globals();
+    fs_active_generation = 0;
+    return 1;
+}
+
+// NOTE: To check persistent image size, print sizeof(struct FSImage) in a test program or with a build-time assert in a C file where both struct FSImage and FS_SECTOR_COUNT are visible.
 
 // Update global variables from fs_image
 static void fsimage_to_globals() {
@@ -118,8 +235,6 @@ void str_concat(char* dest, const char* src) {
     while (*src) *dest++ = *src++;
     *dest = 0;
 }
-
-// --- Filesystem Functions ---
 
 void init_filesystem() {
     for (int i = 0; i < MAX_NODES; i++) {
@@ -432,50 +547,95 @@ int fs_rm(const char* path, int recursive) {
 }
 
 
-// Save the entire node_table and related variables to disk
+static int fs_try_load_slot(int slot, uint32_t* generation_out) {
+    FSSlotHeader header;
+    if (!generation_out) return 0;
+    if (!fs_read_slot_header(slot, &header)) return 0;
+    if (!fs_read_slot_image(slot, &fs_slot_temp)) return 0;
 
+    uint32_t actual_checksum = fs_checksum((const unsigned char*)&fs_slot_temp, sizeof(struct FSImage));
+    if (actual_checksum != header.checksum) return 0;
+    if (fs_slot_temp.magic != FS_IMAGE_MAGIC || fs_slot_temp.version != FS_IMAGE_VERSION) return 0;
+
+    my_memcpy(&fs_image, &fs_slot_temp, sizeof(struct FSImage));
+    *generation_out = header.generation;
+    return 1;
+}
+
+static int fs_slot_is_valid(int slot, uint32_t* generation_out) {
+    FSSlotHeader header;
+    if (!generation_out) return 0;
+    if (!fs_read_slot_header(slot, &header)) return 0;
+    if (!fs_read_slot_image(slot, &fs_slot_temp)) return 0;
+
+    uint32_t actual_checksum = fs_checksum((const unsigned char*)&fs_slot_temp, sizeof(struct FSImage));
+    if (actual_checksum != header.checksum) return 0;
+    if (fs_slot_temp.magic != FS_IMAGE_MAGIC || fs_slot_temp.version != FS_IMAGE_VERSION) return 0;
+
+    *generation_out = header.generation;
+    return 1;
+}
 
 void fs_save() {
     globals_to_fsimage();
-    unsigned char sector_buf[512];
-    unsigned char* img_ptr = (unsigned char*)&fs_image;
-    for (int i = 0; i < FS_SECTOR_COUNT; i++) {
-        // Zero out the buffer for the last sector
-        for (int j = 0; j < 512; j++) sector_buf[j] = 0;
-        int offset = i * 512;
-        int to_copy = sizeof(fs_image) - offset;
-        if (to_copy > 512) to_copy = 512;
-        if (to_copy > 0)
-            my_memcpy(sector_buf, img_ptr + offset, to_copy);
-        if (disk_write_sector(FS_DISK_SECTOR + i, sector_buf) != 0) {
-            volatile char* vga = (volatile char*)0xB8000;
-            const char* msg = "Disk write error (non-fatal)!";
-            for (int j = 0; msg[j]; j++) {
-                vga[j*2] = msg[j];
-                vga[j*2+1] = 0x4F;
-            }
-            return;
+
+    int target_slot = (int)((fs_active_generation + 1u) & 1u);
+    FSSlotHeader header;
+    header.magic = FS_SLOT_MAGIC;
+    header.version = FS_SLOT_VERSION;
+    header.generation = fs_active_generation + 1u;
+    header.payload_size = sizeof(struct FSImage);
+    header.checksum = fs_checksum((const unsigned char*)&fs_image, sizeof(struct FSImage));
+
+    if (!fs_write_slot_image(target_slot, &fs_image) || !fs_write_slot_header(target_slot, &header)) {
+        volatile char* vga = (volatile char*)0xB8000;
+        const char* msg = "Disk write error (non-fatal)!";
+        for (int j = 0; msg[j]; j++) {
+            vga[j*2] = msg[j];
+            vga[j*2+1] = 0x4F;
         }
+        return;
     }
+
+    fs_active_generation = header.generation;
 }
 
-// Load the node_table and related variables from disk
 void fs_load() {
-    unsigned char sector_buf[512];
-    unsigned char* img_ptr = (unsigned char*)&fs_image;
-    int ok = 1;
-    for (int i = 0; i < FS_SECTOR_COUNT; i++) {
-        if (disk_read_sector(FS_DISK_SECTOR + i, sector_buf) != 0) {
-            ok = 0;
-            for (int j = 0; j < 512; j++) sector_buf[j] = 0;
+    uint32_t best_generation = 0;
+    int found = 0;
+
+    for (int slot = 0; slot < FS_SLOT_COUNT; slot++) {
+        uint32_t gen = 0;
+        if (fs_try_load_slot(slot, &gen)) {
+            if (!found || gen > best_generation) {
+                best_generation = gen;
+                found = 1;
+            }
         }
-        int offset = i * 512;
-        int to_copy = sizeof(fs_image) - offset;
-        if (to_copy > 512) to_copy = 512;
-        if (to_copy > 0)
-            my_memcpy(img_ptr + offset, sector_buf, to_copy);
     }
-    if (ok && fs_image.magic == FS_IMAGE_MAGIC && fs_image.version == FS_IMAGE_VERSION) {
+
+    if (found) {
         fsimage_to_globals();
+        fs_active_generation = best_generation;
+        return;
+    }
+
+    if (fs_load_legacy_single_image()) {
+        fs_save();
+        return;
+    }
+
+    fs_active_generation = 0;
+}
+
+void fs_get_status(uint32_t* active_generation_out, int slot_validity[2]) {
+    if (active_generation_out) {
+        *active_generation_out = fs_active_generation;
+    }
+    if (!slot_validity) return;
+
+    for (int i = 0; i < FS_SLOT_COUNT; i++) {
+        uint32_t generation = 0;
+        slot_validity[i] = fs_slot_is_valid(i, &generation) ? 1 : 0;
     }
 }

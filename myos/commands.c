@@ -295,6 +295,28 @@ static void handle_df_command(char* video, int* cursor) {
     print_string(buf, -1, video, cursor, 0xB);
 }
 
+static void handle_fscheck_command(char* video, int* cursor) {
+    uint32_t active_generation = 0;
+    int slot_validity[2] = {0, 0};
+    fs_get_status(&active_generation, slot_validity);
+
+    char buf[64];
+    char temp[16];
+
+    buf[0] = 0;
+    str_concat(buf, "FS active gen: ");
+    int_to_str((int)active_generation, temp);
+    str_concat(buf, temp);
+    print_string(buf, -1, video, cursor, 0xB);
+
+    buf[0] = 0;
+    str_concat(buf, "Slot0: ");
+    str_concat(buf, slot_validity[0] ? "valid" : "invalid");
+    str_concat(buf, " | Slot1: ");
+    str_concat(buf, slot_validity[1] ? "valid" : "invalid");
+    print_string(buf, -1, video, cursor, 0xB);
+}
+
 static void handle_ver_command(char* video, int* cursor) {
     print_string("Smiggles OS v1.0.0\nDeveloped by Jules Miller and Vajra Vanukuri", -1, video, cursor, 0xD);
 }
@@ -354,7 +376,28 @@ static void handle_pwd_command(char* video, int* cursor) {
 }
 
 static void handle_touch_command(const char* filename, char* video, int* cursor) {
-    int result = fs_touch(filename, "");
+    while (*filename == ' ') filename++;
+
+    if (*filename == 0) {
+        print_string("Usage: touch <filename>", 23, video, cursor, 0xC);
+        return;
+    }
+
+    char clean_name[MAX_PATH_LENGTH];
+    int n = 0;
+    while (filename[n] && n < MAX_PATH_LENGTH - 1) {
+        clean_name[n] = filename[n];
+        n++;
+    }
+    while (n > 0 && clean_name[n - 1] == ' ') n--;
+    clean_name[n] = 0;
+
+    if (clean_name[0] == 0) {
+        print_string("Usage: touch <filename>", 23, video, cursor, 0xC);
+        return;
+    }
+
+    int result = fs_touch(clean_name, "");
     if (result < 0) {
         print_string("Cannot create file", 18, video, cursor, 0xC);
     } else {
@@ -617,6 +660,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
             "time - UTC time\n"
             "clear - clear screen\n"
             "df - filesystem usage\n"
+            "fscheck - fs slot health\n"
             "ver - version info\n"
             "uptime - system uptime\n"
             "halt - shutdown\n"
@@ -635,6 +679,8 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
         handle_free_command(video, cursor);
     } else if (mini_strcmp(cmd, "df") == 0) {
         handle_df_command(video, cursor);
+    } else if (mini_strcmp(cmd, "fscheck") == 0) {
+        handle_fscheck_command(video, cursor);
     } else if (mini_strcmp(cmd, "ver") == 0) {
         handle_ver_command(video, cursor);
     } else if (mini_strcmp(cmd, "uptime") == 0) {
@@ -670,9 +716,9 @@ void handle_tab_completion(char* cmd_buf, int* cmd_len, int* cmd_cursor, char* v
     const char* commands[] = {
         "ls", "cd", "pwd", "cat", "mkdir", "rmdir", "rm", "touch", "cp", "mv",
         "echo", "edit", "tree", "grep", "clear", "cls", "help", "time", "ping",
-        "about", "ver", "halt", "reboot", "history", "df", "free", "uptime"
+        "about", "ver", "halt", "reboot", "history", "df", "fscheck", "free", "uptime"
     };
-    int cmd_count = 27;
+    int cmd_count = 28;
     
     // Find what we're trying to complete
     int word_start = *cmd_len;

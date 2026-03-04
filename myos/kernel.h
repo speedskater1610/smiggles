@@ -1,6 +1,6 @@
 #define FS_DISK_SECTOR 10 // Start sector for filesystem data
 // Persistent filesystem image size (must be >= sizeof(struct FSImage) in filesystem.c)
-#define FS_SECTOR_COUNT 160 // 160*512 = 81920 bytes
+#define FS_SECTOR_COUNT 320 // 320*512 = 163840 bytes
 
 // Static assert to ensure persistent image is large enough for FSImage
 #ifndef KERNEL_H
@@ -161,6 +161,7 @@ int parse_path(const char* path, char components[32][MAX_NAME_LENGTH], int* comp
 // Persistent storage
 void fs_save(void);
 void fs_load(void);
+void fs_get_status(uint32_t* active_generation_out, int slot_validity[2]);
 
 // String utilities
 int str_len(const char* s);
