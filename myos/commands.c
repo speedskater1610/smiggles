@@ -79,9 +79,10 @@ static void handle_neofetch_command(char* video, int* cursor) {
         "                 /      /",
         "                /     /",
         "              /      /",
-
-
     };
+
+    int logo_lines = 12;
+    int info_lines = 14;
     char uptime_buf[32];
     char temp[12];
     int seconds = ticks / 18;
@@ -94,24 +95,45 @@ static void handle_neofetch_command(char* video, int* cursor) {
     int_to_str(minutes, temp); str_concat(uptime_buf, temp); str_concat(uptime_buf, "m ");
     int_to_str(seconds, temp); str_concat(uptime_buf, temp); str_concat(uptime_buf, "s");
 
+    // --- Get CPU vendor string using CPUID ---
+    char cpu_vendor[13];
+    cpu_vendor[12] = 0;
+    unsigned int eax, ebx, ecx, edx;
+    eax = 0;
+    __asm__ __volatile__ (
+        "cpuid"
+        : "=b"(ebx), "=d"(edx), "=c"(ecx)
+        : "a"(eax)
+    );
+    ((unsigned int*)cpu_vendor)[0] = ebx;
+    ((unsigned int*)cpu_vendor)[1] = edx;
+    ((unsigned int*)cpu_vendor)[2] = ecx;
+
+    char cpu_line[48];
+    cpu_line[0] = 0;
+    str_concat(cpu_line, "CPU: ");
+    str_concat(cpu_line, cpu_vendor);
+
+    // --- Use a simple hardcoded memory value ---
+    char mem_line[48];
+    mem_line[0] = 0;
+    str_concat(mem_line, "Memory: 64 MiB (static)");
 
     const char* info[] = {
         "OS: Smiggles OS x86_64", // Could use macro if available
-        "Host: VirtualBox 1.2",
+        "Host: QEMU 10.2.1",
         "Kernel: Smiggles OS v1.0.0", // Real version string
         "Uptime:", uptime_buf,
-        "Packages: 42 (smigman)",
+        "Packages: 0",
         "Shell: smigsh 0.1", // Real shell name
         "Resolution: 80x25", // Real resolution
         "Terminal: /dev/tty1", // Real terminal name
-        "CPU: Smiggles 9000X @ 3.14GHz",
-        "GPU: Smiggles VGA Adapter",
-        "Memory: 64MiB / 128MiB",
+        cpu_line,
+        "GPU: VGA Compatible Adapter",
+        mem_line,
         "",
         "__COLORBAR__"
     };
-    int logo_lines = 12;
-    int info_lines = 14;
     int max_lines = (logo_lines > info_lines) ? logo_lines : info_lines;
     for (int i = 0; i < max_lines; i++) {
         // Print logo part
