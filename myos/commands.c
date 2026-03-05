@@ -61,7 +61,142 @@ void add_to_history(const char* cmd) {
     }
 }
 
+
+// --- Neofetch ---
+// --- Neofetch Command ---
+static void handle_neofetch_command(char* video, int* cursor) {
+    // Side-by-side logo and info
+    const char* logo[] = {
+        "",
+        "",
+        "           /^/^-\\",
+        "         _|__|  O|",
+        "\\/     /~     \\_/ \\",
+        " \\____|__________/  \\",
+        "        \\_______      \\",
+        "                `\\     \\",
+        "                  |     |",
+        "                 /      /",
+        "                /     /",
+        "              /      /",
+
+
+    };
+    char uptime_buf[32];
+    char temp[12];
+    int seconds = ticks / 18;
+    int minutes = seconds / 60;
+    int hours = minutes / 60;
+    seconds = seconds % 60;
+    minutes = minutes % 60;
+    uptime_buf[0] = 0;
+    int_to_str(hours, temp); str_concat(uptime_buf, temp); str_concat(uptime_buf, "h ");
+    int_to_str(minutes, temp); str_concat(uptime_buf, temp); str_concat(uptime_buf, "m ");
+    int_to_str(seconds, temp); str_concat(uptime_buf, temp); str_concat(uptime_buf, "s");
+
+
+    const char* info[] = {
+        "OS: Smiggles OS x86_64", // Could use macro if available
+        "Host: VirtualBox 1.2",
+        "Kernel: Smiggles OS v1.0.0", // Real version string
+        "Uptime:", uptime_buf,
+        "Packages: 42 (smigman)",
+        "Shell: smigsh 0.1", // Real shell name
+        "Resolution: 80x25", // Real resolution
+        "Terminal: /dev/tty1", // Real terminal name
+        "CPU: Smiggles 9000X @ 3.14GHz",
+        "GPU: Smiggles VGA Adapter",
+        "Memory: 64MiB / 128MiB",
+        "",
+        "__COLORBAR__"
+    };
+    int logo_lines = 12;
+    int info_lines = 14;
+    int max_lines = (logo_lines > info_lines) ? logo_lines : info_lines;
+    for (int i = 0; i < max_lines; i++) {
+        // Print logo part
+        if (i < logo_lines && logo[i][0] != '\0') {
+            print_string(logo[i], -1, video, cursor, 0x0A);
+        } else {
+            print_string("", -1, video, cursor, 0x0A);
+        }
+        // Pad to column 32 (wider gap)
+        int pad = 32 - (i < logo_lines ? str_len(logo[i]) : 0);
+        if (pad < 2) pad = 2; // always at least 2 spaces
+        for (int j = 0; j < pad; j++) {
+            print_string_sameline(" ", 1, video, cursor, 0x0A);
+        }
+        // Print info part with colored label
+        if (i < info_lines && info[i][0] != '\0') {
+            const char* line = info[i];
+            if (str_equal(line, "__COLORBAR__")) {
+                // Print colored blocks using visible character (ASCII 219: '█')
+                print_string_sameline("\xDB\xDB\xDB", 3, video, cursor, 0x04); // red
+                print_string_sameline("\xDB\xDB\xDB", 3, video, cursor, 0x02); // green
+                print_string_sameline("\xDB\xDB\xDB", 3, video, cursor, 0x0E); // yellow
+                print_string_sameline("\xDB\xDB\xDB", 3, video, cursor, 0x01); // blue
+                print_string_sameline("\xDB\xDB\xDB", 3, video, cursor, 0x05); // magenta
+                print_string_sameline("\xDB\xDB\xDB", 3, video, cursor, 0x03); // cyan
+                print_string_sameline("\xDB\xDB\xDB", 3, video, cursor, 0x07); // white
+            } else if (str_equal(line, "Uptime:")) {
+                // Print label (green)
+                print_string_sameline("Uptime:", -1, video, cursor, 0x0A);
+                print_string_sameline(" ", 1, video, cursor, 0x0F);
+                print_string_sameline(info[i+1], -1, video, cursor, 0x0F);
+                i++; // skip value line
+            } else {
+                // Find colon
+                int colon = -1;
+                for (int k = 0; line[k]; k++) {
+                    if (line[k] == ':') { colon = k; break; }
+                }
+                if (colon > 0 && line[colon+1]) {
+                    // Print label (green)
+                    char label[24];
+                    int l = 0;
+                    for (; l <= colon && l < 23; l++) label[l] = line[l];
+                    label[l] = 0;
+                    print_string_sameline(label, -1, video, cursor, 0x0A); // green
+                    // Print value (white)
+                    print_string_sameline(" ", 1, video, cursor, 0x0F);
+                    print_string_sameline(line+colon+1, -1, video, cursor, 0x0F); // white
+                } else {
+                    // No colon, print whole line in white
+                    print_string_sameline(line, -1, video, cursor, 0x0F);
+                }
+            }
+        }
+    }
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // --- Utility Functions ---
+
 // find_file removed; use resolve_path and node_table for all file lookups
 
 // --- Command Handlers ---
@@ -675,6 +810,8 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
         handle_time_command(video, cursor, 0x0A);
     } else if (mini_strcmp(cmd, "clear") == 0 || mini_strcmp(cmd, "cls") == 0) {
         handle_clear_command(video, cursor);
+    } else if (mini_strcmp(cmd, "neofetch") == 0) {
+        handle_neofetch_command(video, cursor);
     } else if (mini_strcmp(cmd, "free") == 0) {
         handle_free_command(video, cursor);
     } else if (mini_strcmp(cmd, "df") == 0) {

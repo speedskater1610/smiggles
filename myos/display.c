@@ -85,7 +85,7 @@ void print_string_sameline(const char* str, int len, char* video, int* cursor, u
         len = 0;
         while (str[len]) len++;
     }
-    for (int i = 0; i < len && *cursor < 80*25 - 1; ) {
+    for (int i = 0; i < len; ) {
         // Handle "\\n" (two-character sequence)
         if (str[i] == '\\' && (i+1 < len) && str[i+1] == 'n') {
             *cursor = ((*cursor / 80) + 1) * 80;
@@ -97,6 +97,10 @@ void print_string_sameline(const char* str, int len, char* video, int* cursor, u
             *cursor = ((*cursor / 80) + 1) * 80;
             i++;
             continue;
+        }
+        if (*cursor >= 80*25) {
+            scroll_screen(video);
+            *cursor -= 80;
         }
         video[(*cursor)*2] = str[i];
         video[(*cursor)*2+1] = color;
