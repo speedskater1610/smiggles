@@ -986,6 +986,44 @@ static void handle_cp_command(const char* args, char* video, int* cursor) {
 
 // --- Main Command Dispatcher ---
 void dispatch_command(const char* cmd, char* video, int* cursor) {
+                                    // edituser command
+                                    if (mini_strcmp(cmd, "edituser") == 0) {
+                                        extern int current_user_idx;
+                                        extern User user_table[MAX_USERS];
+                                        extern int user_count;
+                                        extern void shell_read_line(char* prompt, char* buf, int max_len, char* video, int* cursor);
+                                        extern void fs_save();
+                                        int target_idx = -1;
+                                        if (current_user_idx < 0) {
+                                            print_string("Not logged in.", -1, video, cursor, COLOR_LIGHT_RED);
+                                            return;
+                                        }
+                                        if (user_table[current_user_idx].is_admin) {
+                                            char username[MAX_NAME_LENGTH];
+                                            shell_read_line("Current username: ", username, MAX_NAME_LENGTH, video, cursor);
+                                            for (int i = 0; i < user_count; i++) {
+                                                if (mini_strcmp(username, user_table[i].username) == 0) {
+                                                    target_idx = i;
+                                                    break;
+                                                }
+                                            }
+                                            if (target_idx == -1) {
+                                                print_string("User not found.", -1, video, cursor, COLOR_LIGHT_RED);
+                                                return;
+                                            }
+                                        } else {
+                                            target_idx = current_user_idx;
+                                        }
+                                        char new_username[MAX_NAME_LENGTH];
+                                        char new_password[MAX_NAME_LENGTH];
+                                        shell_read_line("New username: ", new_username, MAX_NAME_LENGTH, video, cursor);
+                                        shell_read_line("New password: ", new_password, MAX_NAME_LENGTH, video, cursor);
+                                        str_copy(user_table[target_idx].username, new_username, MAX_NAME_LENGTH);
+                                        str_copy(user_table[target_idx].password, new_password, MAX_NAME_LENGTH);
+                                        fs_save();
+                                        print_string("User updated.", -1, video, cursor, COLOR_LIGHT_GREEN);
+                                        return;
+                                    }
                                 // Debug command: dumpusers (prints all usernames and admin status)
                                 if (mini_strcmp(cmd, "dumpusers") == 0) {
                                     extern User user_table[MAX_USERS];
@@ -1083,7 +1121,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
                             extern User user_table[MAX_USERS];
                             extern int user_count;
                             if (current_user_idx < 0 || !user_table[current_user_idx].is_admin) {
-                                print_string("Access denied: admin only.", -1, video, cursor, COLOR_RED);
+                                print_string("Access denied: admin only.", -1, video, cursor, COLOR_LIGHT_RED);
                                 return;
                             }
                             for (int i = 0; i < user_count; i++) {
@@ -1096,7 +1134,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
                     //TODO: let regular 
                     if ((cmd[0] == 'r' && cmd[1] == 'm' && (cmd[2] == ' ' || (cmd[2] == 'd' && cmd[3] == 'i' && cmd[4] == 'r'))) || mini_strcmp(cmd, "useradd") == 0 || mini_strcmp(cmd, "userdel") == 0) {
                         if (current_user_idx < 0) {
-                            print_string("Access denied: login required.", -1, video, cursor, COLOR_RED);
+                            print_string("Access denied: login required.", -1, video, cursor, COLOR_LIGHT_RED);
                             return;
                         }
                     }
