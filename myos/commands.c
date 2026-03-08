@@ -1407,9 +1407,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
             "edit <file> - text editor \n"
             "filesize <file> - show file size\n"
             "hexdump <file> - show hexdump of file\n"
-            "print \"text\" - print text\n"
-            "time - UTC time\n"
-            "clear - clear screen\n"
+            "chmod <file> - change file permissions with octal system\n"
             //"df - filesystem usage\n"
             //"fscheck - fs slot health\n"
             //"ver - version info\n"
@@ -1429,7 +1427,8 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
             "adduser - add new user"
             "deluser - delete user\n"
             "listusers - list all users\n"
-            "edituser - edit any account\n",
+            "edituser - edit any account\n"
+            "chown <file> - change file owner",
             COLOR_YELLOW);
 
     } else if (is_math_expr(cmd)) {
