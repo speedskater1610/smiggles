@@ -1393,7 +1393,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
     } else if (mini_strcmp(cmd, "about") == 0) {
         handle_command(cmd, video, cursor, "about", "Smiggles OS is a lightweight operating system designed by Jules Miller and Vajra Vanukuri.", COLOR_LIGHT_GRAY);
     } else if (mini_strcmp(cmd, "help") == 0) {
-        handle_command(cmd, video, cursor, "help",
+        print_string(
             "---Filesystem---\n"
             "touch file.txt - create file\n"
             "echo \"text\" > <file> - write to file\n"
@@ -1407,17 +1407,20 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
             "edit <file> - text editor \n"
             "filesize <file> - show file size\n"
             "hexdump <file> - show hexdump of file\n"
-            "chmod <file> - change file permissions with octal system\n"
-            //"df - filesystem usage\n"
-            //"fscheck - fs slot health\n"
-            //"ver - version info\n"
+            "chmod <file> - change file permissions with octal system\n",
+            -1, video, cursor, COLOR_YELLOW);
+
+        print_string(
             "---System commands---\n"
             "about - about Smiggles\n"
             "ver - version info\n"
             "uptime - system uptime\n"
             "neofetch - system info\n"
             "halt - shutdown\n"
-            "reboot - restart\n"
+            "reboot - restart\n",
+            -1, video, cursor, COLOR_LIGHT_CYAN);
+
+        print_string(
             "---User authentication---\n"
             "whoami - view logged in user\n"
             "login - log in with username/password\n"
@@ -1429,7 +1432,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
             "listusers - list all users\n"
             "edituser - edit any account\n"
             "chown <file> - change file owner",
-            COLOR_YELLOW);
+            -1, video, cursor, COLOR_LIGHT_GREEN);
 
     } else if (is_math_expr(cmd)) {
         handle_calc_command(cmd, video, cursor);

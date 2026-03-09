@@ -130,6 +130,7 @@ void kernel_main(void) {
     int prompt_end = 0;
     int line_start = 0;
     unsigned char prev_scancode = 0;
+    int e0_prefix_pending = 0;
     int shift = 0;
 
     
@@ -184,21 +185,18 @@ void kernel_main(void) {
             continue;
         }
 
-        // Handle E0 prefix for arrow keys
-        int e0_prefix = 0;
+        // Handle E0 prefix for extended keys (arrow keys, etc.)
         if (scancode == 0xE0) {
-            e0_prefix = 1;
-            // Get next scancode - wait for a valid make code
-            unsigned char next_scancode = 0;
-            while (1) {
-                if (!keyboard_pop_scancode(&next_scancode)) {
-                    continue;
-                }
-                if (next_scancode != 0xE0 && next_scancode != 0 && next_scancode < 0x80) {
-                    scancode = next_scancode;
-                    break;
-                }
-            }
+            e0_prefix_pending = 1;
+            continue;
+        }
+
+        int e0_prefix = e0_prefix_pending;
+        e0_prefix_pending = 0;
+
+        // Ignore release codes for E0-prefixed keys
+        if (e0_prefix && (scancode & 0x80)) {
+            continue;
         }
 
         // Filter out release codes for non-E0 keys
@@ -244,14 +242,6 @@ void kernel_main(void) {
                     cursor--;
                     set_cursor_position(cursor);
                 }
-                // Wait for key release
-                while (1) {
-                    unsigned char rel;
-                    if (!keyboard_pop_scancode(&rel)) {
-                        continue;
-                    }
-                    if (rel == 0xCB) break; // Release code for left arrow
-                }
                 continue;
             } else if (scancode == 0x4D) { // Right arrow
                 if (tab_completion_active && tab_completion_position < tab_match_count - 1) {
@@ -283,14 +273,6 @@ void kernel_main(void) {
                     cursor++;
                     set_cursor_position(cursor);
                 }
-                // Wait for key release
-                while (1) {
-                    unsigned char rel;
-                    if (!keyboard_pop_scancode(&rel)) {
-                        continue;
-                    }
-                    if (rel == 0xCD) break; // Release code for right arrow
-                }
                 continue;
             } else if (scancode == 0x48) { // Up arrow
                 if (history_count > 0) {
@@ -319,14 +301,6 @@ void kernel_main(void) {
                     cursor = line_start + cmd_len;
                     
                     set_cursor_position(cursor);
-                }
-                // Wait for key release
-                while (1) {
-                    unsigned char rel;
-                    if (!keyboard_pop_scancode(&rel)) {
-                        continue;
-                    }
-                    if (rel == 0xC8) break; // Release code for up arrow
                 }
                 continue;
             } else if (scancode == 0x50) { // Down arrow
@@ -359,14 +333,6 @@ void kernel_main(void) {
                     cursor = line_start + cmd_len;
                     
                     set_cursor_position(cursor);
-                }
-                // Wait for key release
-                while (1) {
-                    unsigned char rel;
-                    if (!keyboard_pop_scancode(&rel)) {
-                        continue;
-                    }
-                    if (rel == 0xD0) break; // Release code for down arrow
                 }
                 continue;
             }
