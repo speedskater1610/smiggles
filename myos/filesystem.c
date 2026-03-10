@@ -499,6 +499,11 @@ int fs_touch(const char* path, const char* content) {
             return -2;
         }
     }
+
+    // New file creation is admin-only
+    if (current_user_idx < 0 || current_user_idx >= user_count || !user_table[current_user_idx].is_admin) {
+        return -5;
+    }
     
     int new_idx = -1;
     for (int i = 0; i < MAX_NODES; i++) {
