@@ -827,3 +827,19 @@ void basic_repl(char* video, int* cursor) {
         }
     }
 }
+
+int basic_run_file(const char* filename, char* video, int* cursor) {
+    if (!filename || !filename[0]) {
+        tb_print("Usage: exec <file.bas>", video, cursor, COLOR_LIGHT_RED);
+        return -1;
+    }
+
+    if (!tb_load_program(filename)) {
+        tb_print(basic_last_error[0] ? basic_last_error : "Load failed", video, cursor, COLOR_LIGHT_RED);
+        return -1;
+    }
+
+    tb_reset_runtime();
+    tb_run_program(video, cursor);
+    return 0;
+}

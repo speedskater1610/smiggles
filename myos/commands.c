@@ -1417,6 +1417,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
             "uptime - system uptime\n"
             "neofetch - system info\n"
             "basic - BASIC interpreter\n"
+            "exec <file.bas> - run BASIC file\n"
             "halt - shutdown\n"
             "reboot - restart\n",
             -1, video, cursor, COLOR_LIGHT_CYAN);
@@ -1437,6 +1438,24 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
 
     } else if (mini_strcmp(cmd, "basic") == 0) {
         basic_repl(video, cursor);
+
+    } else if (cmd[0] == 'e' && cmd[1] == 'x' && cmd[2] == 'e' && cmd[3] == 'c' && cmd[4] == ' ') {
+        int start = 5;
+        char filename[MAX_PATH_LENGTH];
+        int fi = 0;
+
+        while (cmd[start] == ' ') start++;
+        while (cmd[start] && fi < MAX_PATH_LENGTH - 1) {
+            filename[fi++] = cmd[start++];
+        }
+        while (fi > 0 && filename[fi - 1] == ' ') fi--;
+        filename[fi] = 0;
+
+        if (filename[0] == 0) {
+            print_string("Usage: exec <file.bas>", -1, video, cursor, COLOR_LIGHT_RED);
+        } else {
+            basic_run_file(filename, video, cursor);
+        }
 
     } else if (is_math_expr(cmd)) {
         handle_calc_command(cmd, video, cursor);
@@ -1500,7 +1519,7 @@ void handle_tab_completion(char* cmd_buf, int* cmd_len, int* cmd_cursor, char* v
     // List of common commands
     const char* commands[] = {
         "ls", "cd", "pwd", "cat", "mkdir", "rmdir", "rm", "touch", "cp", "mv",
-        "echo", "edit", "tree", "grep", "clear", "cls", "help", "time", "ping",
+        "echo", "edit", "tree", "grep", "clear", "cls", "help", "time", "ping", "exec",
         "about", "ver", "halt", "reboot", "history", "df", "fscheck", "free", "uptime", "filesize", "neofetch", "basic", "syscalltest", "spawn", "ps", "kill", "wait"
     };
     int cmd_count = (int)(sizeof(commands) / sizeof(commands[0]));

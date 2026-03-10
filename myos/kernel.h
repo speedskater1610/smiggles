@@ -253,6 +253,7 @@ void handle_calc_command(const char* expr, char* video, int* cursor);
 
 // Tiny BASIC
 void basic_repl(char* video, int* cursor);
+int basic_run_file(const char* filename, char* video, int* cursor);
 
 // Commands
 void dispatch_command(const char* cmd, char* video, int* cursor);
