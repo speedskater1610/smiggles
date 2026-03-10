@@ -190,6 +190,96 @@ RamDir dir_table[MAX_DIRS] = { {"root", 1, -1} };
 int dir_count = 1;
 int current_dir = 0;
 
+static int fs_is_admin_user(int user_idx) {
+    if (user_idx < 0 || user_idx >= user_count) return 0;
+    return user_table[user_idx].is_admin;
+}
+
+int fs_can_access_node(int node_idx) {
+    if (node_idx < 0 || node_idx >= MAX_NODES) return 0;
+    if (!node_table[node_idx].used) return 0;
+    if (current_user_idx < 0) return node_idx == 0;
+    if (fs_is_admin_user(current_user_idx)) return 1;
+    if (node_idx == 0) return 1;
+    return node_table[node_idx].owner_idx == current_user_idx;
+}
+
+static int fs_find_child_dir_by_name(int parent_idx, const char* name) {
+    if (parent_idx < 0 || parent_idx >= MAX_NODES) return -1;
+    if (!node_table[parent_idx].used || node_table[parent_idx].type != NODE_DIRECTORY) return -1;
+    for (int i = 0; i < node_table[parent_idx].child_count; i++) {
+        int child_idx = node_table[parent_idx].children_idx[i];
+        if (!node_table[child_idx].used) continue;
+        if (node_table[child_idx].type != NODE_DIRECTORY) continue;
+        if (str_equal(node_table[child_idx].name, name)) return child_idx;
+    }
+    return -1;
+}
+
+static int fs_create_directory_node(int parent_idx, const char* name, int owner_idx, unsigned short permissions) {
+    int new_idx = -1;
+    if (parent_idx < 0 || parent_idx >= MAX_NODES) return -1;
+    if (!node_table[parent_idx].used || node_table[parent_idx].type != NODE_DIRECTORY) return -1;
+    if (node_table[parent_idx].child_count >= MAX_CHILDREN) return -1;
+
+    for (int i = 0; i < MAX_NODES; i++) {
+        if (!node_table[i].used) {
+            new_idx = i;
+            break;
+        }
+    }
+    if (new_idx == -1) return -1;
+
+    node_table[new_idx].used = 1;
+    node_table[new_idx].type = NODE_DIRECTORY;
+    node_table[new_idx].parent_idx = parent_idx;
+    node_table[new_idx].child_count = 0;
+    node_table[new_idx].owner_idx = owner_idx;
+    node_table[new_idx].permissions = permissions;
+    str_copy(node_table[new_idx].name, name, MAX_NAME_LENGTH);
+
+    node_table[parent_idx].children_idx[node_table[parent_idx].child_count++] = new_idx;
+    if (new_idx >= node_count) node_count = new_idx + 1;
+    return new_idx;
+}
+
+int fs_ensure_user_home(int user_idx) {
+    int home_root_idx;
+    int user_home_idx;
+
+    if (user_idx < 0 || user_idx >= user_count) return -1;
+
+    home_root_idx = fs_find_child_dir_by_name(0, "home");
+    if (home_root_idx == -1) {
+        home_root_idx = fs_create_directory_node(0, "home", 0, 0755);
+        if (home_root_idx == -1) return -1;
+    }
+
+    user_home_idx = fs_find_child_dir_by_name(home_root_idx, user_table[user_idx].username);
+    if (user_home_idx == -1) {
+        user_home_idx = fs_create_directory_node(home_root_idx, user_table[user_idx].username, user_idx, 0700);
+        if (user_home_idx == -1) return -1;
+    }
+
+    return user_home_idx;
+}
+
+void fs_enter_user_home(void) {
+    if (current_user_idx < 0) {
+        current_dir_idx = 0;
+        return;
+    }
+
+    if (fs_is_admin_user(current_user_idx)) {
+        current_dir_idx = 0;
+        return;
+    }
+
+    int user_home = fs_ensure_user_home(current_user_idx);
+    if (user_home >= 0) current_dir_idx = user_home;
+    else current_dir_idx = 0;
+}
+
 // --- String Utilities ---
 int str_len(const char* s) {
     int len = 0;
@@ -254,6 +344,8 @@ void init_filesystem() {
     node_table[0].type = NODE_DIRECTORY;
     node_table[0].parent_idx = -1;
     node_table[0].child_count = 0;
+    node_table[0].owner_idx = 0;
+    node_table[0].permissions = 0755;
     node_table[0].name[0] = '/';
     node_table[0].name[1] = 0;
     node_count = 1;
@@ -269,6 +361,9 @@ void init_filesystem() {
     str_copy(user_table[1].password, "password", 32);
     user_table[1].is_admin = 0;
     user_count = 2;
+
+    fs_ensure_user_home(0);
+    fs_ensure_user_home(1);
 }
 
 void get_full_path(int node_idx, char* path, int max_len) {
@@ -367,7 +462,7 @@ int resolve_path(const char* path) {
             int found = -1;
             for (int j = 0; j < node_table[current].child_count; j++) {
                 int child_idx = node_table[current].children_idx[j];
-                if (str_equal(node_table[child_idx].name, components[i])) {
+                if (str_equal(node_table[child_idx].name, components[i]) && fs_can_access_node(child_idx)) {
                     found = child_idx;
                     break;
                 }
@@ -411,6 +506,13 @@ int fs_mkdir(const char* path) {
     if (parent_idx == -1 || node_table[parent_idx].type != NODE_DIRECTORY) {
         return -1;
     }
+
+    if (current_user_idx < 0) {
+        return -5;
+    }
+    if (!fs_is_admin_user(current_user_idx) && node_table[parent_idx].owner_idx != current_user_idx) {
+        return -6;
+    }
     
     // Check if already exists
     for (int i = 0; i < node_table[parent_idx].child_count; i++) {
@@ -438,6 +540,8 @@ int fs_mkdir(const char* path) {
     node_table[new_idx].type = NODE_DIRECTORY;
     node_table[new_idx].parent_idx = parent_idx;
     node_table[new_idx].child_count = 0;
+    node_table[new_idx].owner_idx = current_user_idx;
+    node_table[new_idx].permissions = 0700;
     str_copy(node_table[new_idx].name, dirname, MAX_NAME_LENGTH);
     
     node_table[parent_idx].children_idx[node_table[parent_idx].child_count++] = new_idx;
@@ -474,6 +578,9 @@ int fs_touch(const char* path, const char* content) {
     
     if (parent_idx == -1) return -1;
     if (!node_table[parent_idx].used || node_table[parent_idx].type != NODE_DIRECTORY) return -1;
+
+    if (current_user_idx < 0) return -5;
+    if (!fs_is_admin_user(current_user_idx) && node_table[parent_idx].owner_idx != current_user_idx) return -6;
     
     // Check if already exists
     for (int i = 0; i < node_table[parent_idx].child_count; i++) {
@@ -500,11 +607,6 @@ int fs_touch(const char* path, const char* content) {
         }
     }
 
-    // New file creation is admin-only
-    if (current_user_idx < 0 || current_user_idx >= user_count || !user_table[current_user_idx].is_admin) {
-        return -5;
-    }
-    
     int new_idx = -1;
     for (int i = 0; i < MAX_NODES; i++) {
         if (!node_table[i].used) {
@@ -525,8 +627,9 @@ int fs_touch(const char* path, const char* content) {
     node_table[new_idx].type = NODE_FILE;
     node_table[new_idx].parent_idx = parent_idx;
     node_table[new_idx].child_count = 0;
+    node_table[new_idx].permissions = 0600;
     str_copy(node_table[new_idx].name, filename, MAX_NAME_LENGTH);
-        node_table[new_idx].owner_idx = current_user_idx; // Set owner to creator
+    node_table[new_idx].owner_idx = current_user_idx;
     
     if (content) {
         int len = 0;

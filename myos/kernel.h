@@ -40,6 +40,7 @@ typedef struct {
 extern User user_table[MAX_USERS];
 extern int user_count;
 extern int current_user_idx; // -1 means no user logged in
+extern int request_login_screen;
 #define MAX_FILE_CONTENT 2048
 #define MAX_FILE_NAME 32
 #define MAX_FILES 8
@@ -220,6 +221,9 @@ int fs_mkdir(const char* path);
 int fs_touch(const char* path, const char* content);
 int fs_rm(const char* path, int recursive);
 int resolve_path(const char* path);
+int fs_can_access_node(int node_idx);
+int fs_ensure_user_home(int user_idx);
+void fs_enter_user_home(void);
 void get_full_path(int node_idx, char* path, int max_len);
 int parse_path(const char* path, char components[32][MAX_NAME_LENGTH], int* comp_count);
 

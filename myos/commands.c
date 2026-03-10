@@ -48,6 +48,7 @@ char history[10][64];
 int history_count = 0;
 
 // --- User Authentication ---
+//note. keeping this function in case we want to use it later, does not do anything right now
 void handle_login_command(char* video, int* cursor) {
     extern User user_table[MAX_USERS];
     extern int user_count;
@@ -292,12 +293,22 @@ static void handle_command(const char* cmd, char* video, int* cursor, const char
 
 static void handle_ls_command(char* video, int* cursor, unsigned char color_unused) {
     FSNode* dir = &node_table[current_dir_idx];
-    if (dir->child_count == 0) {
+    int visible = 0;
+    for (int i = 0; i < dir->child_count; i++) {
+        int child_idx = dir->children_idx[i];
+        if (fs_can_access_node(child_idx)) {
+            visible++;
+        }
+    }
+
+    if (visible == 0) {
         print_string("(empty)", 7, video, cursor, COLOR_LIGHT_CYAN);
         return;
     }
+
     for (int i = 0; i < dir->child_count; i++) {
         int child_idx = dir->children_idx[i];
+        if (!fs_can_access_node(child_idx)) continue;
         FSNode* child = &node_table[child_idx];
         if (child->type == NODE_DIRECTORY) {
             print_string(child->name, -1, video, cursor, COLOR_LIGHT_CYAN);
@@ -455,6 +466,10 @@ static void handle_mkdir_command(const char* dirname, char* video, int* cursor, 
         print_string("Directory already exists", 24, video, cursor, COLOR_LIGHT_RED);
     } else if (result == -3) {
         print_string("No space for new directory", 26, video, cursor, COLOR_LIGHT_RED);
+    } else if (result == -5) {
+        print_string("Login required", -1, video, cursor, COLOR_LIGHT_RED);
+    } else if (result == -6) {
+        print_string("Permission denied.", -1, video, cursor, COLOR_LIGHT_RED);
     } else {
         print_string("Directory created", 17, video, cursor, COLOR_LIGHT_GREEN);
     }
@@ -858,7 +873,11 @@ static void handle_touch_command(const char* filename, char* video, int* cursor)
     }
 
     int result = fs_touch(clean_name, "");
-    if (result < 0) {
+    if (result == -5) {
+        print_string("Login required", -1, video, cursor, COLOR_LIGHT_RED);
+    } else if (result == -6) {
+        print_string("Permission denied.", -1, video, cursor, COLOR_LIGHT_RED);
+    } else if (result < 0) {
         print_string("Cannot create file", 18, video, cursor, COLOR_LIGHT_RED);
     } else {
         print_string("File created", 12, video, cursor, COLOR_LIGHT_GREEN);
@@ -868,6 +887,7 @@ static void handle_touch_command(const char* filename, char* video, int* cursor)
 static void handle_tree_command(char* video, int* cursor) {
     void print_tree(int node_idx, int depth, char* video, int* cursor) {
         if (node_idx < 0 || node_idx >= MAX_NODES || !node_table[node_idx].used) return;
+        if (!fs_can_access_node(node_idx)) return;
         
         // Print indentation
         for (int i = 0; i < depth; i++) {
@@ -1018,6 +1038,24 @@ static void handle_cp_command(const char* args, char* video, int* cursor) {
 
 // --- Main Command Dispatcher ---
 void dispatch_command(const char* cmd, char* video, int* cursor) {
+    extern int current_user_idx;
+    extern int request_login_screen;
+
+    if (cmd[0] == 0) {
+        return;
+    }
+
+    if (mini_strcmp(cmd, "logout") == 0) {
+        current_user_idx = -1;
+        request_login_screen = 1;
+        return;
+    }
+
+    if (current_user_idx < 0) {
+        print_string("Access denied: login required.", -1, video, cursor, COLOR_LIGHT_RED);
+        return;
+    }
+
     // chmod: allow owner and admin, new format: chmod <filename>
     if (cmd[0] == 'c' && cmd[1] == 'h' && cmd[2] == 'm' && cmd[3] == 'o' && cmd[4] == 'd' && cmd[5] == ' ') {
         extern int current_user_idx;
@@ -1208,6 +1246,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
         str_copy(user_table[user_count].username, username, MAX_NAME_LENGTH);
         str_copy(user_table[user_count].password, password, MAX_NAME_LENGTH);
         user_count++;
+        fs_ensure_user_home(user_count - 1);
         extern void fs_save();
         fs_save();
         print_string("User added.", -1, video, cursor, COLOR_LIGHT_GREEN);
@@ -1266,7 +1305,6 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
         }
         return;
     }
-    extern int current_user_idx;
     //Restrict sensitive commands to logged-in users 
     //TODO: let regular 
     if ((cmd[0] == 'r' && cmd[1] == 'm' && (cmd[2] == ' ' || (cmd[2] == 'd' && cmd[3] == 'i' && cmd[4] == 'r'))) || mini_strcmp(cmd, "useradd") == 0 || mini_strcmp(cmd, "userdel") == 0) {
@@ -1274,12 +1312,6 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
             print_string("Access denied: login required.", -1, video, cursor, COLOR_LIGHT_RED);
             return;
         }
-    }
-    if (mini_strcmp(cmd, "logout") == 0) {
-        extern int current_user_idx;
-        current_user_idx = -1;
-        print_string("Logged out.", -1, video, cursor, COLOR_LIGHT_GREEN);
-        return;
     }
     if (mini_strcmp(cmd, "whoami") == 0) {
         extern int current_user_idx;
@@ -1289,10 +1321,6 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
         } else {
             print_string("guest", -1, video, cursor, COLOR_LIGHT_CYAN);
         }
-        return;
-    }
-    if (mini_strcmp(cmd, "login") == 0) {
-        handle_login_command(video, cursor);
         return;
     }
     // nano-like editor: edit filename.txt
@@ -1425,8 +1453,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
         print_string(
             "---User authentication---\n"
             "whoami - view logged in user\n"
-            "login - log in with username/password\n"
-            "logout - log out\n"
+            "logout - return to login screen\n"
             "edituser - edit account information\n"
             "---Admin-only commands---\n"
             "adduser - add new user"

@@ -38,6 +38,77 @@ User user_table[MAX_USERS] = {
 int user_count = 2;
 
 int current_user_idx = -1; // -1 means no user logged in
+int request_login_screen = 0;
+
+void shell_read_line(char* prompt, char* buf, int max_len, char* video, int* cursor);
+
+static void clear_vga_screen(char* video, int* cursor) {
+    for (int i = 0; i < 80 * 25 * 2; i += 2) {
+        video[i] = ' ';
+        video[i + 1] = 0x07;
+    }
+    *cursor = 0;
+    set_cursor_position(*cursor);
+}
+
+static void boot_loading_animation(char* video, int* cursor) {
+    print_string("Loading main kernel", -1, video, cursor, COLOR_LIGHT_GRAY);
+
+    for (int i = 0; i < 6; i++) {
+        unsigned int target = (unsigned int)ticks + 6;
+        while ((unsigned int)ticks < target) {
+            // wait ~0.33s per step at 18.2Hz timer
+        }
+        print_string_sameline(".", 1, video, cursor, COLOR_LIGHT_GRAY);
+    }
+}
+
+static void boot_login_screen(char* video, int* cursor) {
+    char username[MAX_NAME_LENGTH];
+    char password[MAX_NAME_LENGTH];
+
+    clear_vga_screen(video, cursor);
+    print_string("--- Smiggles Login ---", -1, video, cursor, COLOR_LIGHT_CYAN);
+    print_string("Login required.", -1, video, cursor, COLOR_YELLOW);
+
+    while (current_user_idx < 0) {
+        shell_read_line("Username: ", username, MAX_NAME_LENGTH, video, cursor);
+        shell_read_line("Password: ", password, MAX_NAME_LENGTH, video, cursor);
+
+        for (int i = 0; i < user_count; i++) {
+            if (mini_strcmp(username, user_table[i].username) == 0 &&
+                mini_strcmp(password, user_table[i].password) == 0) {
+                current_user_idx = i;
+                break;
+            }
+        }
+
+        if (current_user_idx >= 0) {
+            print_string("Login successful!", -1, video, cursor, COLOR_LIGHT_GREEN);
+            fs_enter_user_home();
+            boot_loading_animation(video, cursor);
+        } else {
+            print_string("Login failed.", -1, video, cursor, COLOR_LIGHT_RED);
+        }
+    }
+}
+
+static void draw_main_shell_screen(char* video, int* cursor, int* line_start_out) {
+    clear_vga_screen(video, cursor);
+    print_smiggles_art(video, cursor);
+    *cursor += 80;
+
+    const char* prompt = "> ";
+    int pi = 0;
+    while (prompt[pi] && *cursor < 80 * 25 - 1) {
+        video[(*cursor) * 2] = prompt[pi];
+        video[(*cursor) * 2 + 1] = 0x0F;
+        (*cursor)++;
+        pi++;
+    }
+    set_cursor_position(*cursor);
+    *line_start_out = *cursor;
+}
 
 // Reusable shell_read_line for login and prompts
 void shell_read_line(char* prompt, char* buf, int max_len, char* video, int* cursor) {
@@ -149,24 +220,10 @@ void kernel_main(void) {
     int shift = 0;
 
     
-    for (int i = 0; i < 80*25*2; i += 2) {
-        video[i] = ' ';
-        video[i+1] = 0x07;
-    }
+    boot_login_screen(video, &cursor);
 
-    //introductory message
-    print_smiggles_art(video, &cursor);
-    cursor += 80; // add one line space
-    const char* msg = "> ";
-    int i = 0;
-    while (msg[i]) {
-        video[cursor*2] = msg[i];
-        video[cursor*2+1] = 0x0F;
-        cursor++;
-        i++;
-    }
+    draw_main_shell_screen(video, &cursor, &line_start);
     prompt_end = cursor;
-    line_start = cursor;
 
     
     set_cursor_position(cursor);
@@ -381,6 +438,21 @@ void kernel_main(void) {
                 } else {
                     dispatch_command(cmd_buf, video, &cursor);
                 }
+
+                if (request_login_screen) {
+                    request_login_screen = 0;
+                    cmd_len = 0;
+                    cmd_cursor = 0;
+                    history_position = -1;
+                    tab_completion_active = 0;
+                    tab_completion_position = -1;
+
+                    boot_login_screen(video, &cursor);
+                    draw_main_shell_screen(video, &cursor, &line_start);
+                    prompt_end = cursor;
+                    continue;
+                }
+
                 // New prompt
                 cursor = ((cursor / 80) + 1) * 80;
                 while (cursor >= 80*25) {
