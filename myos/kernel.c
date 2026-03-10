@@ -38,6 +38,12 @@ User user_table[MAX_USERS] = {
 int user_count = 2;
 
 int current_user_idx = -1; // -1 means no user logged in
+
+
+
+
+// commented out login screen for now
+/*
 int request_login_screen = 0;
 
 void shell_read_line(char* prompt, char* buf, int max_len, char* video, int* cursor);
@@ -109,6 +115,18 @@ static void draw_main_shell_screen(char* video, int* cursor, int* line_start_out
     set_cursor_position(*cursor);
     *line_start_out = *cursor;
 }
+
+
+
+
+*/
+
+
+
+
+
+
+
 
 // Reusable shell_read_line for login and prompts
 void shell_read_line(char* prompt, char* buf, int max_len, char* video, int* cursor) {
@@ -183,8 +201,8 @@ void shell_read_line(char* prompt, char* buf, int max_len, char* video, int* cur
 }
 
 void kernel_main(void) {
-        // Ensure no user is logged in at boot
-        current_user_idx = -1;
+        // Automatically log in as admin at boot
+        current_user_idx = 0;
     // Initialize basic paging and frame allocator (virtual memory foundation)
     init_paging();
     init_protection();
@@ -196,6 +214,8 @@ void kernel_main(void) {
         init_filesystem();
         fs_save();
     }
+    // fsimage_to_globals resets current_user_idx, so set it again after fs_load/init
+    current_user_idx = 0;
 
     // --- Interrupt setup ---
     pic_remap();
@@ -220,10 +240,24 @@ void kernel_main(void) {
     int shift = 0;
 
     
-    boot_login_screen(video, &cursor);
+    for (int i = 0; i < 80*25*2; i += 2) {
+        video[i] = ' ';
+        video[i+1] = 0x07;
+    }
 
-    draw_main_shell_screen(video, &cursor, &line_start);
+    //introductory message
+    print_smiggles_art(video, &cursor);
+    cursor += 80; // add one line space
+    const char* msg = "> ";
+    int i = 0;
+    while (msg[i]) {
+        video[cursor*2] = msg[i];
+        video[cursor*2+1] = 0x0F;
+        cursor++;
+        i++;
+    }
     prompt_end = cursor;
+    line_start = cursor;
 
     
     set_cursor_position(cursor);
@@ -438,21 +472,6 @@ void kernel_main(void) {
                 } else {
                     dispatch_command(cmd_buf, video, &cursor);
                 }
-
-                if (request_login_screen) {
-                    request_login_screen = 0;
-                    cmd_len = 0;
-                    cmd_cursor = 0;
-                    history_position = -1;
-                    tab_completion_active = 0;
-                    tab_completion_position = -1;
-
-                    boot_login_screen(video, &cursor);
-                    draw_main_shell_screen(video, &cursor, &line_start);
-                    prompt_end = cursor;
-                    continue;
-                }
-
                 // New prompt
                 cursor = ((cursor / 80) + 1) * 80;
                 while (cursor >= 80*25) {
