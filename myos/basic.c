@@ -21,6 +21,7 @@ typedef struct {
 
 static BasicLine basic_program[BASIC_MAX_LINES];
 static int basic_vars[26];
+static char basic_str_vars[26][64]; // String variables A$-Z$, max 63 chars
 static BasicForFrame basic_for_stack[BASIC_MAX_FOR_STACK];
 static int basic_for_top = 0;
 static int basic_gosub_stack[BASIC_MAX_GOSUB_STACK];
@@ -122,8 +123,60 @@ static int tb_parse_filename(const char** s, char* out, int out_len) {
 
 static int tb_parse_expr(const char** s, int* out);
 
+// Parse integer or string variable (A-Z or A$-Z$)
 static int tb_parse_factor(const char** s, int* out) {
+        // INT(expr) function
+        tb_skip_spaces(s);
+        if (tb_match_kw(s, "INT")) {
+            tb_skip_spaces(s);
+            if (**s != '(') return 0;
+            (*s)++;
+            int val = 0;
+            if (!tb_parse_expr(s, &val)) return 0;
+            tb_skip_spaces(s);
+            if (**s != ')') return 0;
+            (*s)++;
+            *out = val; // INT just returns integer part (already int)
+            return 1;
+        }
+
+        // ABS(expr) function
+        tb_skip_spaces(s);
+        if (tb_match_kw(s, "ABS")) {
+            tb_skip_spaces(s);
+            if (**s != '(') return 0;
+            (*s)++;
+            int val = 0;
+            if (!tb_parse_expr(s, &val)) return 0;
+            tb_skip_spaces(s);
+            if (**s != ')') return 0;
+            (*s)++;
+            *out = (val < 0) ? -val : val;
+            return 1;
+        }
     tb_skip_spaces(s);
+
+    // RND function: RND or RND(n)
+    if (tb_match_kw(s, "RND")) {
+        int max = 0;
+        tb_skip_spaces(s);
+        if (**s == '(') {
+            (*s)++;
+            if (!tb_parse_expr(s, &max)) return 0;
+            tb_skip_spaces(s);
+            if (**s != ')') return 0;
+            (*s)++;
+        } else {
+            max = 32767;
+        }
+        // Simple linear congruential generator
+        static unsigned int rnd_seed = 123456789;
+        rnd_seed = rnd_seed * 1103515245 + 12345;
+        int result = (rnd_seed >> 16) & 0x7FFF;
+        if (max > 0) result = result % max;
+        *out = result;
+        return 1;
+    }
 
     if (**s == '(') {
         (*s)++;
@@ -137,6 +190,13 @@ static int tb_parse_factor(const char** s, int* out) {
     if (tb_is_alpha(**s)) {
         char var = tb_upper(**s);
         (*s)++;
+        // Check for string variable (A$)
+        if (**s == '$') {
+            (*s)++;
+            // Not used in integer expr, but allow parse
+            *out = 0;
+            return 1;
+        }
         if (var < 'A' || var > 'Z') return 0;
         *out = basic_vars[var - 'A'];
         return 1;
@@ -199,6 +259,12 @@ static int tb_parse_expr(const char** s, int* out) {
 
 static void tb_print(const char* s, char* video, int* cursor, unsigned char color) {
     print_string(s, -1, video, cursor, color);
+}
+
+// Print string variable
+static void tb_print_str_var(char var, char* video, int* cursor) {
+    if (var < 'A' || var > 'Z') return;
+    tb_print(basic_str_vars[var - 'A'], video, cursor, COLOR_LIGHT_GREEN);
 }
 
 static int tb_find_line(int number) {
@@ -412,276 +478,320 @@ typedef enum {
 
 static TbResult tb_exec_line(const char* text, int* pc, char* video, int* cursor) {
     extern void shell_read_line(char* prompt, char* buf, int max_len, char* video, int* cursor);
+    // Multiple statements per line support
     const char* s = text;
     int value = 0;
-
-    tb_skip_spaces(&s);
-    if (*s == 0) return TB_OK;
-
-    if (tb_match_kw(&s, "REM")) return TB_OK;
-
-    if (tb_match_kw(&s, "PRINT")) {
-        tb_skip_spaces(&s);
-        if (*s == '"') {
-            char out[96];
-            int i = 0;
-            s++;
-            while (*s && *s != '"' && i < 95) out[i++] = *s++;
-            out[i] = 0;
-            tb_print(out, video, cursor, COLOR_LIGHT_GREEN);
-            return TB_OK;
+    TbResult result = TB_OK;
+    while (*s) {
+        // Find next ':' not in quotes
+        const char* stmt_start = s;
+        int in_quotes = 0;
+        const char* stmt_end = s;
+        while (*stmt_end) {
+            if (*stmt_end == '"') in_quotes = !in_quotes;
+            if (!in_quotes && *stmt_end == ':') break;
+            stmt_end++;
         }
-        if (!tb_parse_expr(&s, &value)) return TB_ERR;
-        char num[16];
-        int_to_str(value, num);
-        tb_print(num, video, cursor, COLOR_LIGHT_GREEN);
-        return TB_OK;
-    }
-
-    if (tb_match_kw(&s, "LET")) {
-        tb_skip_spaces(&s);
-        if (!tb_is_alpha(*s)) return TB_ERR;
-        char var = tb_upper(*s++);
-        tb_skip_spaces(&s);
-        if (*s != '=') return TB_ERR;
-        s++;
-        if (!tb_parse_expr(&s, &value)) return TB_ERR;
-        basic_vars[var - 'A'] = value;
-        return TB_OK;
-    }
-
-    if (tb_match_kw(&s, "INPUT")) {
-        char var = 0;
-        char prompt[64];
-        char inbuf[32];
-        int input_val = 0;
-        int pi = 0;
-
-        prompt[0] = 0;
-        tb_skip_spaces(&s);
-
-        if (*s == '"') {
-            s++;
-            while (*s && *s != '"' && pi < (int)sizeof(prompt) - 3) {
-                prompt[pi++] = *s++;
-            }
-            if (*s != '"') {
-                tb_set_error("Bad INPUT prompt");
-                return TB_ERR;
-            }
-            s++;
-            tb_skip_spaces(&s);
-            if (*s == ';' || *s == ',') s++;
+        // Copy statement
+        char statement[128];
+        int len = (int)(stmt_end - stmt_start);
+        if (len >= (int)sizeof(statement)) len = (int)sizeof(statement) - 1;
+        for (int i = 0; i < len; i++) statement[i] = stmt_start[i];
+        statement[len] = 0;
+        // Execute statement
+        const char* exec_s = statement;
+        tb_skip_spaces(&exec_s);
+        if (*exec_s == 0) {
+            // Empty statement, skip
+            s = (*stmt_end == ':') ? stmt_end + 1 : stmt_end;
+            continue;
         }
-
-        tb_skip_spaces(&s);
-        if (!tb_is_alpha(*s)) {
-            tb_set_error("INPUT needs variable");
-            return TB_ERR;
-        }
-        var = tb_upper(*s++);
-        if (var < 'A' || var > 'Z') {
-            tb_set_error("Invalid variable");
-            return TB_ERR;
-        }
-
-        if (prompt[0] == 0) {
-            prompt[0] = var;
-            prompt[1] = '?';
-            prompt[2] = ' ';
-            prompt[3] = 0;
-        }
-
-        shell_read_line(prompt, inbuf, (int)sizeof(inbuf), video, cursor);
-        if (!tb_parse_int_str(inbuf, &input_val)) {
-            tb_set_error("INPUT expects integer");
-            return TB_ERR;
-        }
-        basic_vars[var - 'A'] = input_val;
-        return TB_OK;
-    }
-
-    if (tb_match_kw(&s, "IF")) {
-        int cond = 0;
-        int line_no = 0;
-        if (!tb_eval_condition(&s, &cond)) return TB_ERR;
-        tb_skip_spaces(&s);
-        if (!tb_match_kw(&s, "THEN")) return TB_ERR;
-        if (!tb_parse_int(&s, &line_no)) return TB_ERR;
-        if (cond) {
-            int idx = tb_find_line(line_no);
-            if (idx < 0) return TB_ERR;
-            *pc = idx;
-        }
-        return TB_OK;
-    }
-
-    if (tb_match_kw(&s, "GOTO")) {
-        int line_no = 0;
-        if (!tb_parse_int(&s, &line_no)) return TB_ERR;
-        int idx = tb_find_line(line_no);
-        if (idx < 0) return TB_ERR;
-        *pc = idx;
-        return TB_OK;
-    }
-
-    if (tb_match_kw(&s, "GOSUB")) {
-        int line_no = 0;
-        int idx = -1;
-        int next_pc = -1;
-
-        if (!tb_parse_int(&s, &line_no)) {
-            tb_set_error("Bad GOSUB target");
-            return TB_ERR;
-        }
-        idx = tb_find_line(line_no);
-        if (idx < 0) {
-            tb_set_error("GOSUB line not found");
-            return TB_ERR;
-        }
-        if (basic_gosub_top >= BASIC_MAX_GOSUB_STACK) {
-            tb_set_error("GOSUB stack overflow");
-            return TB_ERR;
-        }
-
-        next_pc = tb_next_used_from(*pc);
-        basic_gosub_stack[basic_gosub_top++] = next_pc;
-        *pc = idx;
-        return TB_OK;
-    }
-
-    if (tb_match_kw(&s, "RETURN")) {
-        int ret_pc;
-        if (basic_gosub_top <= 0) {
-            tb_set_error("RETURN without GOSUB");
-            return TB_ERR;
-        }
-        ret_pc = basic_gosub_stack[--basic_gosub_top];
-        *pc = ret_pc;
-        return TB_OK;
-    }
-
-    if (tb_match_kw(&s, "FOR")) {
-        char var;
-        int start_val = 0;
-        int end_val = 0;
-        int step_val = 1;
-        BasicForFrame frame;
-
-        tb_skip_spaces(&s);
-        if (!tb_is_alpha(*s)) {
-            tb_set_error("FOR needs variable");
-            return TB_ERR;
-        }
-        var = tb_upper(*s++);
-        if (var < 'A' || var > 'Z') {
-            tb_set_error("Invalid FOR variable");
-            return TB_ERR;
-        }
-
-        tb_skip_spaces(&s);
-        if (*s != '=') {
-            tb_set_error("FOR missing '='");
-            return TB_ERR;
-        }
-        s++;
-
-        if (!tb_parse_expr(&s, &start_val)) {
-            tb_set_error("Bad FOR start");
-            return TB_ERR;
-        }
-
-        tb_skip_spaces(&s);
-        if (!tb_match_kw(&s, "TO")) {
-            tb_set_error("FOR missing TO");
-            return TB_ERR;
-        }
-        if (!tb_parse_expr(&s, &end_val)) {
-            tb_set_error("Bad FOR end");
-            return TB_ERR;
-        }
-
-        tb_skip_spaces(&s);
-        if (tb_match_kw(&s, "STEP")) {
-            if (!tb_parse_expr(&s, &step_val) || step_val == 0) {
-                tb_set_error("Bad FOR step");
-                return TB_ERR;
+        // Now execute as before
+        if (tb_match_kw(&exec_s, "REM")) { /* skip */ }
+        else if (tb_match_kw(&exec_s, "PRINT")) {
+            tb_skip_spaces(&exec_s);
+            if (*exec_s == '"') {
+                char out[96];
+                int i = 0;
+                exec_s++;
+                while (*exec_s && *exec_s != '"' && i < 95) out[i++] = *exec_s++;
+                out[i] = 0;
+                tb_print(out, video, cursor, COLOR_LIGHT_GREEN);
+            } else if (tb_is_alpha(*exec_s) && exec_s[1] == '$') {
+                char var = tb_upper(*exec_s);
+                exec_s += 2;
+                tb_print_str_var(var, video, cursor);
+            } else {
+                if (!tb_parse_expr(&exec_s, &value)) result = TB_ERR;
+                else {
+                    char num[16];
+                    int_to_str(value, num);
+                    tb_print(num, video, cursor, COLOR_LIGHT_GREEN);
+                }
             }
         }
-
-        if (basic_for_top >= BASIC_MAX_FOR_STACK) {
-            tb_set_error("FOR stack overflow");
-            return TB_ERR;
-        }
-
-        basic_vars[var - 'A'] = start_val;
-        frame.var_idx = var - 'A';
-        frame.end_value = end_val;
-        frame.step_value = step_val;
-        frame.resume_pc = tb_next_used_from(*pc);
-        basic_for_stack[basic_for_top++] = frame;
-        return TB_OK;
-    }
-
-    if (tb_match_kw(&s, "NEXT")) {
-        int var_idx = -1;
-        int frame_idx;
-        BasicForFrame* frame;
-
-        tb_skip_spaces(&s);
-        if (tb_is_alpha(*s)) {
-            char var = tb_upper(*s++);
-            if (var >= 'A' && var <= 'Z') var_idx = var - 'A';
-        }
-
-        if (basic_for_top <= 0) {
-            tb_set_error("NEXT without FOR");
-            return TB_ERR;
-        }
-
-        frame_idx = basic_for_top - 1;
-        if (var_idx >= 0) {
-            while (frame_idx >= 0 && basic_for_stack[frame_idx].var_idx != var_idx) frame_idx--;
-            if (frame_idx < 0) {
-                tb_set_error("NEXT variable mismatch");
-                return TB_ERR;
+        else if (tb_match_kw(&exec_s, "LET")) {
+            tb_skip_spaces(&exec_s);
+            if (!tb_is_alpha(*exec_s)) result = TB_ERR;
+            else {
+                char var = tb_upper(*exec_s++);
+                // String variable assignment (LET A$ = "foo")
+                if (*exec_s == '$') {
+                    exec_s++;
+                    tb_skip_spaces(&exec_s);
+                    if (*exec_s != '=') result = TB_ERR;
+                    else {
+                        exec_s++;
+                        tb_skip_spaces(&exec_s);
+                        if (*exec_s == '"') {
+                            exec_s++;
+                            int i = 0;
+                            while (*exec_s && *exec_s != '"' && i < 63) {
+                                basic_str_vars[var - 'A'][i++] = *exec_s++;
+                            }
+                            basic_str_vars[var - 'A'][i] = 0;
+                            if (*exec_s == '"') exec_s++;
+                        } else {
+                            tb_set_error("String assignment needs quotes");
+                            result = TB_ERR;
+                        }
+                    }
+                } else {
+                    tb_skip_spaces(&exec_s);
+                    if (*exec_s != '=') result = TB_ERR;
+                    else {
+                        exec_s++;
+                        if (!tb_parse_expr(&exec_s, &value)) result = TB_ERR;
+                        else basic_vars[var - 'A'] = value;
+                    }
+                }
             }
         }
-
-        frame = &basic_for_stack[frame_idx];
-        basic_vars[frame->var_idx] += frame->step_value;
-
-        if ((frame->step_value > 0 && basic_vars[frame->var_idx] <= frame->end_value) ||
-            (frame->step_value < 0 && basic_vars[frame->var_idx] >= frame->end_value)) {
-            *pc = frame->resume_pc;
-        } else {
-            for (int i = frame_idx; i < basic_for_top - 1; i++) {
-                basic_for_stack[i] = basic_for_stack[i + 1];
+        else if (tb_match_kw(&exec_s, "INPUT")) {
+            char var = 0;
+            char prompt[64];
+            char inbuf[32];
+            int input_val = 0;
+            int pi = 0;
+            prompt[0] = 0;
+            tb_skip_spaces(&exec_s);
+            if (*exec_s == '"') {
+                exec_s++;
+                while (*exec_s && *exec_s != '"' && pi < (int)sizeof(prompt) - 3) {
+                    prompt[pi++] = *exec_s++;
+                }
+                if (*exec_s != '"') { tb_set_error("Bad INPUT prompt"); result = TB_ERR; }
+                else {
+                    exec_s++;
+                    tb_skip_spaces(&exec_s);
+                    if (*exec_s == ';' || *exec_s == ',') exec_s++;
+                }
             }
-            basic_for_top--;
-        }
-        return TB_OK;
-    }
-
-    if (tb_match_kw(&s, "END")) {
-        return TB_END;
-    }
-
-    if (tb_is_alpha(*s)) {
-        char var = tb_upper(*s);
-        if (var >= 'A' && var <= 'Z') {
-            s++;
-            tb_skip_spaces(&s);
-            if (*s == '=') {
-                s++;
-                if (!tb_parse_expr(&s, &value)) return TB_ERR;
-                basic_vars[var - 'A'] = value;
-                return TB_OK;
+            tb_skip_spaces(&exec_s);
+            if (!tb_is_alpha(*exec_s)) { tb_set_error("INPUT needs variable"); result = TB_ERR; }
+            else {
+                var = tb_upper(*exec_s++);
+                if (var < 'A' || var > 'Z') { tb_set_error("Invalid variable"); result = TB_ERR; }
+                else {
+                    // String variable input (INPUT A$)
+                    if (*exec_s == '$') {
+                        exec_s++;
+                        if (prompt[0] == 0) {
+                            prompt[0] = var;
+                            prompt[1] = '$';
+                            prompt[2] = '?';
+                            prompt[3] = ' ';
+                            prompt[4] = 0;
+                        }
+                        shell_read_line(prompt, basic_str_vars[var - 'A'], 64, video, cursor);
+                    } else {
+                        if (prompt[0] == 0) {
+                            prompt[0] = var;
+                            prompt[1] = '?';
+                            prompt[2] = ' ';
+                            prompt[3] = 0;
+                        }
+                        shell_read_line(prompt, inbuf, (int)sizeof(inbuf), video, cursor);
+                        if (!tb_parse_int_str(inbuf, &input_val)) { tb_set_error("INPUT expects integer"); result = TB_ERR; }
+                        else basic_vars[var - 'A'] = input_val;
+                    }
+                }
             }
         }
+        else if (tb_match_kw(&exec_s, "IF")) {
+            int cond = 0;
+            if (!tb_eval_condition(&exec_s, &cond)) result = TB_ERR;
+            else {
+                tb_skip_spaces(&exec_s);
+                if (!tb_match_kw(&exec_s, "THEN")) result = TB_ERR;
+                else {
+                    tb_skip_spaces(&exec_s);
+                    if (cond) {
+                        // Try to parse a line number (jump)
+                        const char* stmt = exec_s;
+                        int line_no = 0;
+                        if (tb_parse_int(&stmt, &line_no)) {
+                            int idx = tb_find_line(line_no);
+                            if (idx < 0) result = TB_ERR;
+                            else *pc = idx;
+                        } else {
+                            TbResult r = tb_exec_line(exec_s, pc, video, cursor);
+                            if (r == TB_ERR) result = TB_ERR;
+                            else if (r == TB_END) return TB_END;
+                        }
+                    }
+                }
+            }
+        }
+        else if (tb_match_kw(&exec_s, "GOTO")) {
+            int line_no = 0;
+            if (!tb_parse_int(&exec_s, &line_no)) result = TB_ERR;
+            else {
+                int idx = tb_find_line(line_no);
+                if (idx < 0) result = TB_ERR;
+                else *pc = idx;
+            }
+        }
+        else if (tb_match_kw(&exec_s, "GOSUB")) {
+            int line_no = 0;
+            int idx = -1;
+            int next_pc = -1;
+            if (!tb_parse_int(&exec_s, &line_no)) { tb_set_error("Bad GOSUB target"); result = TB_ERR; }
+            else {
+                idx = tb_find_line(line_no);
+                if (idx < 0) { tb_set_error("GOSUB line not found"); result = TB_ERR; }
+                else if (basic_gosub_top >= BASIC_MAX_GOSUB_STACK) { tb_set_error("GOSUB stack overflow"); result = TB_ERR; }
+                else {
+                    next_pc = tb_next_used_from(*pc);
+                    basic_gosub_stack[basic_gosub_top++] = next_pc;
+                    *pc = idx;
+                }
+            }
+        }
+        else if (tb_match_kw(&exec_s, "RETURN")) {
+            int ret_pc;
+            if (basic_gosub_top <= 0) { tb_set_error("RETURN without GOSUB"); result = TB_ERR; }
+            else {
+                ret_pc = basic_gosub_stack[--basic_gosub_top];
+                *pc = ret_pc;
+            }
+        }
+        else if (tb_match_kw(&exec_s, "FOR")) {
+            char var;
+            int start_val = 0;
+            int end_val = 0;
+            int step_val = 1;
+            BasicForFrame frame;
+            tb_skip_spaces(&exec_s);
+            if (!tb_is_alpha(*exec_s)) { tb_set_error("FOR needs variable"); result = TB_ERR; }
+            else {
+                var = tb_upper(*exec_s++);
+                if (var < 'A' || var > 'Z') { tb_set_error("Invalid FOR variable"); result = TB_ERR; }
+                else {
+                    tb_skip_spaces(&exec_s);
+                    if (*exec_s != '=') { tb_set_error("FOR missing '='"); result = TB_ERR; }
+                    else {
+                        exec_s++;
+                        if (!tb_parse_expr(&exec_s, &start_val)) { tb_set_error("Bad FOR start"); result = TB_ERR; }
+                        else {
+                            tb_skip_spaces(&exec_s);
+                            if (!tb_match_kw(&exec_s, "TO")) { tb_set_error("FOR missing TO"); result = TB_ERR; }
+                            else if (!tb_parse_expr(&exec_s, &end_val)) { tb_set_error("Bad FOR end"); result = TB_ERR; }
+                            else {
+                                tb_skip_spaces(&exec_s);
+                                if (tb_match_kw(&exec_s, "STEP")) {
+                                    if (!tb_parse_expr(&exec_s, &step_val) || step_val == 0) { tb_set_error("Bad FOR step"); result = TB_ERR; }
+                                }
+                                if (basic_for_top >= BASIC_MAX_FOR_STACK) { tb_set_error("FOR stack overflow"); result = TB_ERR; }
+                                else {
+                                    basic_vars[var - 'A'] = start_val;
+                                    frame.var_idx = var - 'A';
+                                    frame.end_value = end_val;
+                                    frame.step_value = step_val;
+                                    frame.resume_pc = tb_next_used_from(*pc);
+                                    basic_for_stack[basic_for_top++] = frame;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        else if (tb_match_kw(&exec_s, "NEXT")) {
+            int var_idx = -1;
+            int frame_idx;
+            BasicForFrame* frame;
+            tb_skip_spaces(&exec_s);
+            if (tb_is_alpha(*exec_s)) {
+                char var = tb_upper(*exec_s++);
+                if (var >= 'A' && var <= 'Z') var_idx = var - 'A';
+            }
+            if (basic_for_top <= 0) { tb_set_error("NEXT without FOR"); result = TB_ERR; }
+            else {
+                frame_idx = basic_for_top - 1;
+                if (var_idx >= 0) {
+                    while (frame_idx >= 0 && basic_for_stack[frame_idx].var_idx != var_idx) frame_idx--;
+                    if (frame_idx < 0) { tb_set_error("NEXT variable mismatch"); result = TB_ERR; }
+                }
+                frame = &basic_for_stack[frame_idx];
+                basic_vars[frame->var_idx] += frame->step_value;
+                if ((frame->step_value > 0 && basic_vars[frame->var_idx] <= frame->end_value) ||
+                    (frame->step_value < 0 && basic_vars[frame->var_idx] >= frame->end_value)) {
+                    *pc = frame->resume_pc;
+                } else {
+                    for (int i = frame_idx; i < basic_for_top - 1; i++) {
+                        basic_for_stack[i] = basic_for_stack[i + 1];
+                    }
+                    basic_for_top--;
+                }
+            }
+        }
+        else if (tb_match_kw(&exec_s, "END")) {
+            return TB_END;
+        }
+        else if (tb_is_alpha(*exec_s)) {
+            char var = tb_upper(*exec_s);
+            if (var >= 'A' && var <= 'Z') {
+                exec_s++;
+                // String variable assignment (A$ = "foo")
+                if (*exec_s == '$') {
+                    exec_s++;
+                    tb_skip_spaces(&exec_s);
+                    if (*exec_s == '=') {
+                        exec_s++;
+                        tb_skip_spaces(&exec_s);
+                        if (*exec_s == '"') {
+                            exec_s++;
+                            int i = 0;
+                            while (*exec_s && *exec_s != '"' && i < 63) {
+                                basic_str_vars[var - 'A'][i++] = *exec_s++;
+                            }
+                            basic_str_vars[var - 'A'][i] = 0;
+                            if (*exec_s == '"') exec_s++;
+                        } else {
+                            tb_set_error("String assignment needs quotes");
+                            result = TB_ERR;
+                        }
+                    }
+                } else {
+                    tb_skip_spaces(&exec_s);
+                    if (*exec_s == '=') {
+                        exec_s++;
+                        if (!tb_parse_expr(&exec_s, &value)) result = TB_ERR;
+                        else basic_vars[var - 'A'] = value;
+                    }
+                }
+            }
+        }
+        else {
+            result = TB_ERR;
+        }
+        // Move to next statement
+        s = (*stmt_end == ':') ? stmt_end + 1 : stmt_end;
+        if (result == TB_END) return TB_END;
+        if (result == TB_ERR) return TB_ERR;
     }
-
-    return TB_ERR;
+    return TB_OK;
 }
 
 static void tb_run_program(char* video, int* cursor) {
