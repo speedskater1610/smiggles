@@ -600,6 +600,36 @@ static int parse_nonneg_int(const char* s, int* out) {
     return 1;
 }
 
+static int parse_ipv4_text(const char* s, uint8_t out_ip[4]) {
+    int part = 0;
+    int value = 0;
+    int seen_digit = 0;
+
+    if (!s || !out_ip) return 0;
+
+    while (*s == ' ') s++;
+    while (*s) {
+        if (*s >= '0' && *s <= '9') {
+            seen_digit = 1;
+            value = value * 10 + (*s - '0');
+            if (value > 255) return 0;
+        } else if (*s == '.') {
+            if (!seen_digit || part > 2) return 0;
+            out_ip[part++] = (uint8_t)value;
+            value = 0;
+            seen_digit = 0;
+        } else if (*s == ' ') {
+        } else {
+            return 0;
+        }
+        s++;
+    }
+
+    if (!seen_digit || part != 3) return 0;
+    out_ip[3] = (uint8_t)value;
+    return 1;
+}
+
 static void handle_spawn_command(const char* arg, char* video, int* cursor) {
     while (*arg == ' ') arg++;
 
@@ -1422,8 +1452,336 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
         }
         filename[fn] = 0;
         handle_echo_command(text, filename, video, cursor, 0x0A);
+    } else if (mini_strcmp(cmd, "pciscan") == 0) {
+        pci_scan_and_print(video, cursor);
+    } else if (mini_strcmp(cmd, "rtltest") == 0) {
+        Rtl8139Status status;
+        int result = 1;
+
+        if (!rtl8139_get_status(&status) || !status.initialized) {
+            result = rtl8139_init();
+        }
+
+        if (result == 1) {
+            rtl8139_print_status(video, cursor);
+        } else if (result == 0) {
+            print_string("RTL8139: device not present", -1, video, cursor, COLOR_LIGHT_RED);
+        } else if (result == -2) {
+            print_string("RTL8139: invalid I/O base", -1, video, cursor, COLOR_LIGHT_RED);
+        } else if (result == -3) {
+            print_string("RTL8139: PCI enable failed", -1, video, cursor, COLOR_LIGHT_RED);
+        } else if (result == -4) {
+            print_string("RTL8139: reset timed out", -1, video, cursor, COLOR_LIGHT_RED);
+        } else {
+            print_string("RTL8139: init failed", -1, video, cursor, COLOR_LIGHT_RED);
+        }
+    } else if (mini_strcmp(cmd, "rtltx") == 0) {
+        Rtl8139Status status;
+        unsigned char frame[64];
+        int result;
+
+        if (!rtl8139_get_status(&status) || !status.initialized) {
+            result = rtl8139_init();
+            if (result <= 0) {
+                print_string("RTL8139: init required before tx", -1, video, cursor, COLOR_LIGHT_RED);
+                return;
+            }
+            rtl8139_get_status(&status);
+        }
+
+        for (int i = 0; i < 6; i++) frame[i] = 0xFF;
+        for (int i = 0; i < 6; i++) frame[6 + i] = status.mac[i];
+        frame[12] = 0x88;
+        frame[13] = 0xB5;
+        for (int i = 14; i < 60; i++) frame[i] = 0;
+        frame[14] = 'S';
+        frame[15] = 'M';
+        frame[16] = 'I';
+        frame[17] = 'G';
+        frame[18] = 'G';
+        frame[19] = 'L';
+        frame[20] = 'E';
+        frame[21] = 'S';
+
+        result = rtl8139_send_frame(frame, 60);
+        if (result > 0) {
+            print_string("RTL8139: test frame queued", -1, video, cursor, COLOR_LIGHT_GREEN);
+        } else {
+            print_string("RTL8139: tx failed", -1, video, cursor, COLOR_LIGHT_RED);
+        }
+    } else if (mini_strcmp(cmd, "rtlrx") == 0) {
+        unsigned char frame[256];
+        int length = 0;
+        int result;
+        char line[96];
+        char value[24];
+        const char* hex = "0123456789ABCDEF";
+
+        result = rtl8139_poll_receive(frame, sizeof(frame), &length);
+        if (result == 0) {
+            print_string("RTL8139: no packet available", -1, video, cursor, COLOR_YELLOW);
+        } else if (result < 0) {
+            print_string("RTL8139: rx failed", -1, video, cursor, COLOR_LIGHT_RED);
+        } else {
+            line[0] = 0;
+            str_concat(line, "RTL8139: received ");
+            int_to_str(length, value);
+            str_concat(line, value);
+            str_concat(line, " bytes type=0x");
+            value[0] = hex[(frame[12] >> 4) & 0x0F];
+            value[1] = hex[frame[12] & 0x0F];
+            value[2] = hex[(frame[13] >> 4) & 0x0F];
+            value[3] = hex[frame[13] & 0x0F];
+            value[4] = 0;
+            str_concat(line, value);
+            print_string(line, -1, video, cursor, COLOR_LIGHT_GREEN);
+        }
+    } else if (mini_strcmp(cmd, "arp table") == 0) {
+        int count = arp_get_cache_count();
+        char line[96];
+        char value[24];
+        const char* hex = "0123456789ABCDEF";
+
+        if (count == 0) {
+            print_string("ARP: cache empty", -1, video, cursor, COLOR_YELLOW);
+        } else {
+            for (int i = 0; i < count; i++) {
+                uint8_t ip[4];
+                uint8_t mac[6];
+                int p = 0;
+                if (!arp_get_cache_entry(i, ip, mac)) continue;
+
+                line[0] = 0;
+                str_concat(line, "ARP ");
+                int_to_str(ip[0], value); str_concat(line, value); str_concat(line, ".");
+                int_to_str(ip[1], value); str_concat(line, value); str_concat(line, ".");
+                int_to_str(ip[2], value); str_concat(line, value); str_concat(line, ".");
+                int_to_str(ip[3], value); str_concat(line, value);
+                str_concat(line, " -> ");
+
+                value[p++] = hex[(mac[0] >> 4) & 0x0F]; value[p++] = hex[mac[0] & 0x0F]; value[p++] = ':';
+                value[p++] = hex[(mac[1] >> 4) & 0x0F]; value[p++] = hex[mac[1] & 0x0F]; value[p++] = ':';
+                value[p++] = hex[(mac[2] >> 4) & 0x0F]; value[p++] = hex[mac[2] & 0x0F]; value[p++] = ':';
+                value[p++] = hex[(mac[3] >> 4) & 0x0F]; value[p++] = hex[mac[3] & 0x0F]; value[p++] = ':';
+                value[p++] = hex[(mac[4] >> 4) & 0x0F]; value[p++] = hex[mac[4] & 0x0F]; value[p++] = ':';
+                value[p++] = hex[(mac[5] >> 4) & 0x0F]; value[p++] = hex[mac[5] & 0x0F]; value[p++] = 0;
+
+                str_concat(line, value);
+                print_string(line, -1, video, cursor, COLOR_LIGHT_CYAN);
+            }
+        }
+    } else if (cmd[0] == 'a' && cmd[1] == 'r' && cmd[2] == 'p' && cmd[3] == ' ' && cmd[4] == 's' && cmd[5] == 'e' && cmd[6] == 't' && cmd[7] == 'i' && cmd[8] == 'p' && cmd[9] == ' ') {
+        uint8_t ip[4] = {0, 0, 0, 0};
+        int part = 0;
+        int value = 0;
+        int seen_digit = 0;
+        int ok = 1;
+        const char* s = cmd + 10;
+
+        while (*s == ' ') s++;
+        while (*s && ok) {
+            if (*s >= '0' && *s <= '9') {
+                seen_digit = 1;
+                value = value * 10 + (*s - '0');
+                if (value > 255) ok = 0;
+            } else if (*s == '.') {
+                if (!seen_digit || part > 2) ok = 0;
+                else {
+                    ip[part++] = (uint8_t)value;
+                    value = 0;
+                    seen_digit = 0;
+                }
+            } else if (*s == ' ') {
+            } else {
+                ok = 0;
+            }
+            s++;
+        }
+
+        if (ok && seen_digit && part == 3) {
+            ip[3] = (uint8_t)value;
+            if (arp_set_local_ip(ip)) {
+                print_string("ARP: local IP updated", -1, video, cursor, COLOR_LIGHT_GREEN);
+            } else {
+                print_string("ARP: failed to set local IP", -1, video, cursor, COLOR_LIGHT_RED);
+            }
+        } else {
+            print_string("Usage: arp setip <a.b.c.d>", -1, video, cursor, COLOR_LIGHT_RED);
+        }
+    } else if (cmd[0] == 'a' && cmd[1] == 'r' && cmd[2] == 'p' && cmd[3] == ' ' && cmd[4] == 'w' && cmd[5] == 'h' && cmd[6] == 'o' && cmd[7] == 'h' && cmd[8] == 'a' && cmd[9] == 's' && cmd[10] == ' ') {
+        uint8_t ip[4] = {0, 0, 0, 0};
+        int part = 0;
+        int value = 0;
+        int seen_digit = 0;
+        int ok = 1;
+        const char* s = cmd + 11;
+
+        while (*s == ' ') s++;
+        while (*s && ok) {
+            if (*s >= '0' && *s <= '9') {
+                seen_digit = 1;
+                value = value * 10 + (*s - '0');
+                if (value > 255) ok = 0;
+            } else if (*s == '.') {
+                if (!seen_digit || part > 2) ok = 0;
+                else {
+                    ip[part++] = (uint8_t)value;
+                    value = 0;
+                    seen_digit = 0;
+                }
+            } else if (*s == ' ') {
+            } else {
+                ok = 0;
+            }
+            s++;
+        }
+
+        if (ok && seen_digit && part == 3) {
+            ip[3] = (uint8_t)value;
+            if (arp_send_request(ip) > 0) {
+                print_string("ARP: request sent", -1, video, cursor, COLOR_LIGHT_GREEN);
+            } else {
+                print_string("ARP: request failed", -1, video, cursor, COLOR_LIGHT_RED);
+            }
+        } else {
+            print_string("Usage: arp whohas <a.b.c.d>", -1, video, cursor, COLOR_LIGHT_RED);
+        }
+    } else if (mini_strcmp(cmd, "arp poll") == 0) {
+        int r = arp_poll_once();
+        if (r == 0) {
+            print_string("ARP: no packet available", -1, video, cursor, COLOR_YELLOW);
+        } else if (r == 1) {
+            print_string("ARP: packet processed", -1, video, cursor, COLOR_LIGHT_GREEN);
+        } else if (r == 2) {
+            print_string("ARP: non-ARP frame ignored", -1, video, cursor, COLOR_YELLOW);
+        } else {
+            print_string("ARP: poll failed", -1, video, cursor, COLOR_LIGHT_RED);
+        }
+    } else if (mini_strcmp(cmd, "ip poll") == 0) {
+        int r = ipv4_poll_once();
+        if (r == 0) {
+            print_string("IP: no packet available", -1, video, cursor, COLOR_YELLOW);
+        } else if (r == 1) {
+            IPv4Stats stats;
+            char line[96];
+            char value[24];
+            if (!ipv4_get_stats(&stats)) {
+                print_string("IP: stats unavailable", -1, video, cursor, COLOR_LIGHT_RED);
+                return;
+            }
+
+            line[0] = 0;
+            str_concat(line, "IP: src ");
+            int_to_str(stats.last_src_ip[0], value); str_concat(line, value); str_concat(line, ".");
+            int_to_str(stats.last_src_ip[1], value); str_concat(line, value); str_concat(line, ".");
+            int_to_str(stats.last_src_ip[2], value); str_concat(line, value); str_concat(line, ".");
+            int_to_str(stats.last_src_ip[3], value); str_concat(line, value);
+            str_concat(line, " -> ");
+            int_to_str(stats.last_dst_ip[0], value); str_concat(line, value); str_concat(line, ".");
+            int_to_str(stats.last_dst_ip[1], value); str_concat(line, value); str_concat(line, ".");
+            int_to_str(stats.last_dst_ip[2], value); str_concat(line, value); str_concat(line, ".");
+            int_to_str(stats.last_dst_ip[3], value); str_concat(line, value);
+            print_string(line, -1, video, cursor, COLOR_LIGHT_GREEN);
+
+            line[0] = 0;
+            str_concat(line, "IP: proto=");
+            int_to_str(stats.last_protocol, value); str_concat(line, value);
+            str_concat(line, " ttl=");
+            int_to_str(stats.last_ttl, value); str_concat(line, value);
+            str_concat(line, " len=");
+            int_to_str(stats.last_total_length, value); str_concat(line, value);
+            print_string(line, -1, video, cursor, COLOR_LIGHT_CYAN);
+        } else if (r == 2) {
+            print_string("IP: non-IPv4 frame ignored", -1, video, cursor, COLOR_YELLOW);
+        } else {
+            print_string("IP: parse failed", -1, video, cursor, COLOR_LIGHT_RED);
+        }
+    } else if (mini_strcmp(cmd, "ip stats") == 0) {
+        IPv4Stats stats;
+        char line[96];
+        char value[24];
+
+        if (!ipv4_get_stats(&stats)) {
+            print_string("IP: stats unavailable", -1, video, cursor, COLOR_LIGHT_RED);
+            return;
+        }
+
+        line[0] = 0;
+        str_concat(line, "IP frames=");
+        int_to_str((int)stats.frames_polled, value); str_concat(line, value);
+        str_concat(line, " parsed=");
+        int_to_str((int)stats.ipv4_parsed, value); str_concat(line, value);
+        str_concat(line, " non-ip=");
+        int_to_str((int)stats.non_ipv4_frames, value); str_concat(line, value);
+        print_string(line, -1, video, cursor, COLOR_LIGHT_GRAY);
+
+        line[0] = 0;
+        str_concat(line, "IP err ver=");
+        int_to_str((int)stats.bad_version, value); str_concat(line, value);
+        str_concat(line, " ihl=");
+        int_to_str((int)stats.bad_ihl, value); str_concat(line, value);
+        str_concat(line, " len=");
+        int_to_str((int)stats.bad_total_length, value); str_concat(line, value);
+        str_concat(line, " csum=");
+        int_to_str((int)stats.bad_checksum, value); str_concat(line, value);
+        print_string(line, -1, video, cursor, COLOR_LIGHT_GRAY);
+    } else if (mini_strcmp(cmd, "icmp poll") == 0) {
+        int r = icmp_poll_once();
+        if (r == 0) {
+            print_string("ICMP: no packet available", -1, video, cursor, COLOR_YELLOW);
+        } else if (r == 1) {
+            print_string("ICMP: packet processed", -1, video, cursor, COLOR_LIGHT_GREEN);
+        } else if (r == 2 || r == 3) {
+            print_string("ICMP: non-ICMP frame ignored", -1, video, cursor, COLOR_YELLOW);
+        } else {
+            print_string("ICMP: poll failed", -1, video, cursor, COLOR_LIGHT_RED);
+        }
+    } else if (mini_strcmp(cmd, "icmp stats") == 0) {
+        ICMPStats stats;
+        char line[96];
+        char value[24];
+
+        if (!icmp_get_stats(&stats)) {
+            print_string("ICMP: stats unavailable", -1, video, cursor, COLOR_LIGHT_RED);
+            return;
+        }
+
+        line[0] = 0;
+        str_concat(line, "ICMP frames=");
+        int_to_str((int)stats.frames_polled, value); str_concat(line, value);
+        str_concat(line, " seen=");
+        int_to_str((int)stats.icmp_seen, value); str_concat(line, value);
+        str_concat(line, " errs=");
+        int_to_str((int)stats.parse_errors, value); str_concat(line, value);
+        print_string(line, -1, video, cursor, COLOR_LIGHT_GRAY);
+
+        line[0] = 0;
+        str_concat(line, "ICMP req=");
+        int_to_str((int)stats.echo_requests, value); str_concat(line, value);
+        str_concat(line, " rep-sent=");
+        int_to_str((int)stats.echo_replies_sent, value); str_concat(line, value);
+        str_concat(line, " rep-recv=");
+        int_to_str((int)stats.echo_replies_received, value); str_concat(line, value);
+        print_string(line, -1, video, cursor, COLOR_LIGHT_GRAY);
+    } else if (cmd[0] == 'p' && cmd[1] == 'i' && cmd[2] == 'n' && cmd[3] == 'g' && cmd[4] == ' ') {
+        uint8_t ip[4];
+        int result;
+
+        if (!parse_ipv4_text(cmd + 5, ip)) {
+            print_string("Usage: ping <a.b.c.d>", -1, video, cursor, COLOR_LIGHT_RED);
+            return;
+        }
+
+        result = icmp_send_echo_request(ip, 0x534Du, (uint16_t)(ticks & 0xFFFF));
+        if (result > 0) {
+            print_string("ICMP: echo request sent", -1, video, cursor, COLOR_LIGHT_GREEN);
+        } else if (result == -4) {
+            print_string("ICMP: target MAC unknown (run arp whohas first)", -1, video, cursor, COLOR_YELLOW);
+        } else {
+            print_string("ICMP: echo request failed", -1, video, cursor, COLOR_LIGHT_RED);
+        }
     } else if (mini_strcmp(cmd, "ping") == 0) {
-        handle_command(cmd, video, cursor, "ping", "pong", COLOR_LIGHT_GREEN);
+        print_string("Usage: ping <a.b.c.d>", -1, video, cursor, COLOR_YELLOW);
     } else if (mini_strcmp(cmd, "about") == 0) {
         handle_command(cmd, video, cursor, "about", "Smiggles OS is a lightweight operating system designed by Jules Miller and Vajra Vanukuri.", COLOR_LIGHT_GRAY);
     } else if (mini_strcmp(cmd, "help") == 0) {
@@ -1450,6 +1808,19 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
             "ver - version info\n"
             "uptime - system uptime\n"
             "neofetch - system info\n"
+            "pciscan - detect RTL8139 on PCI\n"
+            "rtltest - init RTL8139 and print MAC\n"
+            "rtltx - send test Ethernet frame\n"
+            "rtlrx - poll one received Ethernet frame\n"
+            "arp setip <a.b.c.d> - set local IPv4\n"
+            "arp whohas <a.b.c.d> - send ARP request\n"
+            "arp poll - poll one frame and process ARP\n"
+            "arp table - show ARP cache\n"
+            "ip poll - poll and parse one IPv4 frame\n"
+            "ip stats - show IPv4 parser counters\n"
+            "ping <a.b.c.d> - send ICMP echo request\n"
+            "icmp poll - process one ICMP packet\n"
+            "icmp stats - show ICMP counters\n"
             "basic - BASIC interpreter\n"
             "exec <file.bas> - run BASIC file\n"
             "panic - show kernel panic screen\n"
@@ -1557,7 +1928,7 @@ void handle_tab_completion(char* cmd_buf, int* cmd_len, int* cmd_cursor, char* v
     const char* commands[] = {
         "ls", "cd", "pwd", "cat", "mkdir", "rmdir", "rm", "touch", "cp", "mv",
         "echo", "edit", "tree", "grep", "clear", "cls", "help", "time", "ping", "exec",
-        "about", "ver", "panic", "halt", "reboot", "history", "df", "fscheck", "free", "uptime", "filesize", "neofetch", "basic", "syscalltest", "spawn", "ps", "kill", "wait"
+        "about", "ver", "panic", "halt", "reboot", "history", "df", "fscheck", "free", "uptime", "filesize", "neofetch", "pciscan", "rtltest", "rtltx", "rtlrx", "arp", "ip", "ping", "icmp", "basic", "syscalltest", "spawn", "ps", "kill", "wait"
     };
     int cmd_count = (int)(sizeof(commands) / sizeof(commands[0]));
     

@@ -191,6 +191,52 @@ typedef struct {
     int wheel_delta;
 } MouseState;
 
+typedef struct {
+    int found;
+    uint8_t bus;
+    uint8_t slot;
+    uint8_t function;
+    uint16_t vendor_id;
+    uint16_t device_id;
+    uint32_t io_base;
+    uint8_t irq_line;
+} PciRtl8139Info;
+
+typedef struct {
+    int present;
+    int initialized;
+    uint32_t io_base;
+    uint8_t irq_line;
+    uint8_t mac[6];
+    uint32_t tx_packets;
+    uint32_t rx_packets;
+    uint32_t last_rx_length;
+} Rtl8139Status;
+
+typedef struct {
+    uint32_t frames_polled;
+    uint32_t ipv4_parsed;
+    uint32_t non_ipv4_frames;
+    uint32_t bad_version;
+    uint32_t bad_ihl;
+    uint32_t bad_total_length;
+    uint32_t bad_checksum;
+    uint8_t last_src_ip[4];
+    uint8_t last_dst_ip[4];
+    uint8_t last_protocol;
+    uint8_t last_ttl;
+    uint16_t last_total_length;
+} IPv4Stats;
+
+typedef struct {
+    uint32_t frames_polled;
+    uint32_t icmp_seen;
+    uint32_t echo_requests;
+    uint32_t echo_replies_sent;
+    uint32_t echo_replies_received;
+    uint32_t parse_errors;
+} ICMPStats;
+
 // --- Function Declarations ---
 
 // Memory management
@@ -299,6 +345,37 @@ int disk_write_sector(unsigned int lba, const void* buffer);
 int ata_read_sector(unsigned int lba, void* buffer);
 int ata_write_sector(unsigned int lba, const void* buffer);
 
+// PCI
+int pci_find_rtl8139(PciRtl8139Info* out_info);
+int pci_enable_device_io_busmaster(uint8_t bus, uint8_t slot, uint8_t function);
+void pci_scan_and_print(char* video, int* cursor);
+
+// RTL8139
+int rtl8139_init(void);
+int rtl8139_get_status(Rtl8139Status* out_status);
+int rtl8139_send_frame(const uint8_t* frame, int length);
+int rtl8139_poll_receive(uint8_t* frame_out, int max_length, int* out_length);
+void rtl8139_print_status(char* video, int* cursor);
+
+// ARP
+#define ARP_CACHE_SIZE 8
+int arp_set_local_ip(const uint8_t ip[4]);
+int arp_get_local_ip(uint8_t ip_out[4]);
+int arp_send_request(const uint8_t target_ip[4]);
+int arp_poll_once(void);
+int arp_get_cache_count(void);
+int arp_get_cache_entry(int index, uint8_t ip_out[4], uint8_t mac_out[6]);
+int arp_lookup_mac(const uint8_t ip[4], uint8_t mac_out[6]);
+
+// IPv4
+int ipv4_poll_once(void);
+int ipv4_get_stats(IPv4Stats* out_stats);
+
+// ICMP
+int icmp_send_echo_request(const uint8_t target_ip[4], uint16_t identifier, uint16_t sequence);
+int icmp_poll_once(void);
+int icmp_get_stats(ICMPStats* out_stats);
+
 #endif // KERNEL_H
 
 // I/O port functions for ATA
@@ -317,4 +394,12 @@ static inline unsigned short inw(unsigned short port) {
 }
 static inline void outw(unsigned short port, unsigned short val) {
     asm volatile ("outw %0, %1" : : "a"(val), "Nd"(port));
+}
+static inline unsigned int inl(unsigned short port) {
+    unsigned int ret;
+    asm volatile ("inl %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+static inline void outl(unsigned short port, unsigned int val) {
+    asm volatile ("outl %0, %1" : : "a"(val), "Nd"(port));
 }

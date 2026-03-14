@@ -51,14 +51,29 @@ syscall.o: syscall.c
 protection.o: protection.c
 	$(CC) -ffreestanding -c protection.c -o protection.o
 
-kernel.bin: kernel_entry.o kernel.o interrupts.o memory.o filesystem.o display.o calculator.o basic.o editor.o commands.o diskio.o ata.o process.o syscall.o protection.o
-	$(LD) -Ttext 0x10000 kernel_entry.o kernel.o interrupts.o memory.o filesystem.o display.o calculator.o basic.o editor.o commands.o diskio.o ata.o process.o syscall.o protection.o -o kernel.bin --oformat binary
+pci.o: pci.c
+	$(CC) -ffreestanding -c pci.c -o pci.o
+
+rtl8139.o: rtl8139.c
+	$(CC) -ffreestanding -c rtl8139.c -o rtl8139.o
+
+arp.o: arp.c
+	$(CC) -ffreestanding -c arp.c -o arp.o
+
+ipv4.o: ipv4.c
+	$(CC) -ffreestanding -c ipv4.c -o ipv4.o
+
+icmp.o: icmp.c
+	$(CC) -ffreestanding -c icmp.c -o icmp.o
+
+kernel.bin: kernel_entry.o kernel.o interrupts.o memory.o filesystem.o display.o calculator.o basic.o editor.o commands.o diskio.o ata.o process.o syscall.o protection.o pci.o rtl8139.o arp.o ipv4.o icmp.o
+	$(LD) -Ttext 0x10000 kernel_entry.o kernel.o interrupts.o memory.o filesystem.o display.o calculator.o basic.o editor.o commands.o diskio.o ata.o process.o syscall.o protection.o pci.o rtl8139.o arp.o ipv4.o icmp.o -o kernel.bin --oformat binary
 process.o: process.c
 	$(CC) -ffreestanding -c process.c -o process.o
 
 floppy.img: boot.bin kernel.bin
 	cat boot.bin kernel.bin > floppy.img
-	@ truncate -s 1474560 floppy.img
+	-@ truncate -s 1474560 floppy.img
 
 hdd.img:
 	@ if [ ! -f hdd.img ]; then qemu-img create -f raw hdd.img 10M; fi
