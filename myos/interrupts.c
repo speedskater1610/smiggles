@@ -231,13 +231,13 @@ void pic_remap() {
 }
 
 // C handlers called from ASM stubs
+// Timer IRQ handler.  Increments the tick counter and does lightweight
+// maintenance only.  Context switching is NOT done here because
+// context_switch_asm cannot safely nest inside the pusha/popa IRQ wrapper.
+// Cooperative scheduling happens via process_yield() called from user code.
 void timer_handler() {
     ticks++;
-    process_run_current_tick();
     process_maintenance_tick();
-    if ((ticks % 6) == 0) {
-        schedule();
-    }
     asm volatile("outb %0, %1" : : "a"((unsigned char)PIC_EOI), "Nd"((uint16_t)PIC1_COMMAND));
 }
 

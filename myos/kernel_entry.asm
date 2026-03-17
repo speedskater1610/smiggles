@@ -82,21 +82,30 @@ irq12_mouse_handler:
     iretd
 
 ; Syscall interrupt handler (int 0x80)
-; Input: eax = syscall number
-; Output: eax = syscall return value
+; Linux ABI: eax=number, ebx=arg0, ecx=arg1, edx=arg2
+; We also pass the saved CS to let syscall_dispatch detect ring-3 callers
+; and route them to the Linux compatibility layer automatically.
+;
+; After pusha the stack layout is:
+;   [esp+ 0]=edi [+4]=esi [+8]=ebp [+12]=old_esp [+16]=ebx
+;   [+20]=edx   [+24]=ecx [+28]=eax
+;   [+32]=eip   [+36]=cs  [+40]=eflags
+;   (ring-3 callers also push esp3/ss3 above eflags)
 isr_syscall_handler:
     pusha
-    mov eax, [esp + 28]
-    mov ebx, [esp + 16]
-    mov ecx, [esp + 24]
-    mov edx, [esp + 20]
+    mov eax, [esp + 28]      ; syscall number  (eax)
+    mov ebx, [esp + 16]      ; arg0            (ebx)
+    mov ecx, [esp + 24]      ; arg1            (ecx)
+    mov edx, [esp + 20]      ; arg2            (edx)
+    mov esi, [esp + 36]      ; saved cs  — used to detect ring-3 callers
+    push esi                 ; 5th arg: saved_cs
     push edx
     push ecx
     push ebx
     push eax
     call syscall_dispatch
-    add esp, 16
-    mov [esp + 28], eax
+    add esp, 20
+    mov [esp + 28], eax      ; write return value back into saved eax
     popa
     iretd
 
@@ -105,6 +114,55 @@ load_idt:
     mov eax, [esp+4] ; pointer to IDT ptr
     lidt [eax]
     ret
+
+; ── Real cooperative context switch ────────────────────────────────────────
+; void context_switch_asm(uint32_t *save_esp, uint32_t load_esp)
+; Saves edi/esi/ebx/ebp/eflags onto the current stack, records ESP in
+; *save_esp, then loads load_esp and restores the new process's frame.
+; A freshly created process has a pre-built frame (see process_create).
+[GLOBAL context_switch_asm]
+context_switch_asm:
+    ; Stack at entry: [esp+0]=retaddr [esp+4]=save_esp* [esp+8]=load_esp
+    pushfd
+    push ebp
+    push ebx
+    push esi
+    push edi
+    ; Stack now:  [esp+0]=edi [esp+4]=esi [esp+8]=ebx [esp+12]=ebp
+    ;             [esp+16]=eflags [esp+20]=retaddr
+    ;             [esp+24]=save_esp* [esp+28]=load_esp
+    mov eax, [esp+24]        ; eax = save_esp pointer
+    mov [eax], esp           ; *save_esp = current kernel stack
+    mov esp, [esp+28]        ; switch to new process kernel stack
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    popfd
+    ret                      ; resume target at its saved return address
+
+; ── Ring-3 (user-mode) entry trampoline ─────────────────────────────────────
+; void jump_to_ring3(uint32_t entry, uint32_t user_esp)
+; Sets up an iretd frame and drops the CPU into CPL=3.
+; GDT slots used: 0x18 user code | 0x20 user data  (see protection.c)
+[GLOBAL jump_to_ring3]
+jump_to_ring3:
+    mov eax, [esp+4]         ; EIP for ring-3
+    mov ecx, [esp+8]         ; ESP for ring-3
+    ; Point data segments at user data descriptor with RPL=3 (0x20|3=0x23)
+    mov dx, 0x23
+    mov ds, dx
+    mov es, dx
+    mov fs, dx
+    mov gs, dx
+    ; iretd frame (pushed high→low): ss, esp, eflags, cs, eip
+    push dword 0x23          ; ss  = user data | RPL 3
+    push ecx                 ; user ESP
+    pushfd
+    or  dword [esp], 0x200   ; ensure IF=1 (interrupts enabled in user mode)
+    push dword 0x1B          ; cs  = 0x18 user code | RPL 3
+    push eax                 ; EIP = entry point
+    iretd
 
 EXC_NOERR 0
 EXC_NOERR 1

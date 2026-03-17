@@ -1470,8 +1470,19 @@ static int udpecho_step_once(char* video, int* cursor) {
 static void handle_spawn_command(const char* arg, char* video, int* cursor) {
     while (*arg == ' ') arg++;
 
+    if (arg[0] == 'r' && arg[1] == 'i' && arg[2] == 'n' && arg[3] == 'g' && arg[4] == '3' && arg[5] == 0) {
+        int pid = process_spawn_ring3_demo();
+        if (pid < 0) {
+            print_string("Failed to spawn ring3 process", -1, video, cursor, COLOR_LIGHT_RED);
+            return;
+        }
+        print_string("Spawned ring3 user-mode process", -1, video, cursor, COLOR_LIGHT_GREEN);
+        schedule();
+        return;
+    }
+
     if (!(arg[0] == 'd' && arg[1] == 'e' && arg[2] == 'm' && arg[3] == 'o' && (arg[4] == 0 || arg[4] == ' '))) {
-        print_string("Usage: spawn demo [count|auto on|auto off]", -1, video, cursor, COLOR_LIGHT_RED);
+        print_string("Usage: spawn demo [count|auto on|auto off] | spawn ring3", -1, video, cursor, COLOR_LIGHT_RED);
         return;
     }
 
@@ -3309,6 +3320,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
             "basic - BASIC interpreter\n"
             "exec <file.bas> - run BASIC file\n"
             "fdtest <file> - fd syscall open/write/read test\n"
+            "spawn ring3 - run ring-3 Linux ABI smoke test\n"
             "panic - show kernel panic screen\n"
             "halt - shutdown\n"
             "reboot - restart\n",

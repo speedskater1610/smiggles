@@ -93,14 +93,18 @@ void init_paging(void) {
     }
 
     // Identity-map first 16 MiB using 4 page tables.
+    // NOTE: for the initial ring-3 bring-up we mark these pages USER-accessible
+    // (bit 2 = 1).  This gives us working CPL=3 execution and Linux int 0x80
+    // ABI compatibility immediately.  The next step after ELF loading is to
+    // split this into per-process user mappings plus supervisor-only kernel pages.
     for (int t = 0; t < 4; t++) {
         for (int i = 0; i < 1024; i++) {
             uint32_t addr = (uint32_t)((t * 1024 + i) * PAGE_SIZE);
-            // Present (bit 0) | Read/Write (bit 1) | Supervisor (bit 2 = 0)
-            page_tables[t][i] = addr | 0x3;
+            // Present | RW | USER
+            page_tables[t][i] = addr | 0x7;
         }
-        // Present | RW | Supervisor for page directory entries
-        page_directory[t] = ((uint32_t)page_tables[t]) | 0x3;
+        // Present | RW | USER for page directory entries too
+        page_directory[t] = ((uint32_t)page_tables[t]) | 0x7;
     }
 
     // Load page directory base into CR3

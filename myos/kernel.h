@@ -89,14 +89,14 @@ void process_exit(void);
 // Voluntarily yield CPU
 void process_yield(void);
 
-// Run currently scheduled process for one scheduler tick
-void process_run_current_tick(void);
-
 // Spawn a demo background process
 int process_spawn_demo(void);
 
 // Spawn demo process with custom work ticks (0 = unlimited)
 int process_spawn_demo_with_work(unsigned int work_ticks);
+
+// Spawn a user-mode (ring-3) Linux-ABI smoke-test process
+int process_spawn_ring3_demo(void);
 
 // Kill process by pid
 int process_kill(int pid);
@@ -301,7 +301,13 @@ extern void irq12_mouse_handler();
 extern void isr_syscall_handler();
 
 // Syscalls
-unsigned int syscall_dispatch(unsigned int number, unsigned int arg0, unsigned int arg1, unsigned int arg2);
+// saved_cs: CS selector at the time int 0x80 fired (bits 1:0 = RPL).
+// Ring-3 callers are automatically routed to linux_syscall_dispatch().
+unsigned int syscall_dispatch(unsigned int number,
+                              unsigned int arg0,
+                              unsigned int arg1,
+                              unsigned int arg2,
+                              unsigned int saved_cs);
 unsigned int syscall_invoke(unsigned int number);
 unsigned int syscall_invoke1(unsigned int number, unsigned int arg0);
 unsigned int syscall_invoke2(unsigned int number, unsigned int arg0, unsigned int arg1);
@@ -489,6 +495,69 @@ int tcp_get_conn_info(int index, TCPConnInfo* out_info);
 
 // Unified network dispatcher
 int net_poll_once(void);
+
+// ── Real context switch (kernel_entry.asm) ──────────────────────────────────
+// Saves edi/esi/ebx/ebp/eflags on the current stack, stores ESP in
+// *save_esp, loads load_esp, restores the saved frame and returns into
+// the new process.  Used by context_switch() in process.c.
+extern void context_switch_asm(unsigned int* save_esp, unsigned int load_esp);
+
+// Drop CPU into CPL=3 (ring 3) at entry:user_esp via iretd.
+// GDT must have user code (0x18) and user data (0x20) descriptors.
+extern void jump_to_ring3(unsigned int entry, unsigned int user_esp);
+
+// ── Linux i386 syscall ABI compatibility ─────────────────────────────────────
+// When a ring-3 process calls  int 0x80  with eax = one of these numbers
+// we dispatch through linux_syscall_dispatch() instead of our own table.
+#define LINUX_SYS_EXIT          1
+#define LINUX_SYS_FORK          2
+#define LINUX_SYS_READ          3
+#define LINUX_SYS_WRITE         4
+#define LINUX_SYS_OPEN          5
+#define LINUX_SYS_CLOSE         6
+#define LINUX_SYS_WAITPID       7
+#define LINUX_SYS_EXECVE        11
+#define LINUX_SYS_GETPID        20
+#define LINUX_SYS_GETUID        24
+#define LINUX_SYS_GETGID        47
+#define LINUX_SYS_GETEUID       49
+#define LINUX_SYS_GETEGID       50
+#define LINUX_SYS_BRK           45
+#define LINUX_SYS_IOCTL         54
+#define LINUX_SYS_MMAP          90
+#define LINUX_SYS_MUNMAP        91
+#define LINUX_SYS_UNAME         122
+#define LINUX_SYS_WRITEV        146
+#define LINUX_SYS_EXIT_GROUP    252
+
+// Linux errno values returned as negative integers from syscalls
+#define LINUX_EPERM     (-1)
+#define LINUX_ENOENT    (-2)
+#define LINUX_EBADF     (-9)
+#define LINUX_ENOMEM    (-12)
+#define LINUX_EFAULT    (-14)
+#define LINUX_EINVAL    (-22)
+#define LINUX_ENOSYS    (-38)
+
+// Linux uname() struct (old_utsname layout used by most static binaries)
+typedef struct {
+    char sysname[65];
+    char nodename[65];
+    char release[65];
+    char version[65];
+    char machine[65];
+} LinuxUtsname;
+
+// Process ring level flags (stored in PCB in the future)
+#define PROC_RING_KERNEL 0
+#define PROC_RING_USER   3
+
+// Dispatch a Linux-ABI syscall.  Called from syscall_dispatch when eax
+// matches a known Linux syscall number.
+unsigned int linux_syscall_dispatch(unsigned int number,
+                                    unsigned int arg0,
+                                    unsigned int arg1,
+                                    unsigned int arg2);
 
 #endif // KERNEL_H
 

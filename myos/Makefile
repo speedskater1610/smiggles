@@ -3,6 +3,8 @@ ASM=nasm
 CC=i686-elf-gcc
 LD=i686-elf-ld
 QEMU=qemu-system-i386
+HOST_UDP_PORT?=15556
+HOST_HTTP_PORT?=18080
 
 all: floppy.img hdd.img
 
@@ -93,7 +95,7 @@ floppy.img: boot.bin kernel.bin
 hdd.img:
 	@ if [ ! -f hdd.img ]; then qemu-img create -f raw hdd.img 10M; fi
 run: floppy.img hdd.img
-	$(QEMU) -fda floppy.img -hda hdd.img -serial stdio -net nic,model=rtl8139 -net user,hostfwd=udp::5556-:5555,hostfwd=tcp::8080-:8080
+	$(QEMU) -fda floppy.img -hda hdd.img -serial stdio -net nic,model=rtl8139 -net user,hostfwd=udp::$(HOST_UDP_PORT)-:5555,hostfwd=tcp::$(HOST_HTTP_PORT)-:8080
 
 clean:
 	rm -f *.o *.bin *.img
