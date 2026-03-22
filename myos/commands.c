@@ -1964,32 +1964,52 @@ static void handle_cp_command(const char* args, char* video, int* cursor) {
 // --- Main Command Dispatcher ---
 void dispatch_command(const char* cmd, char* video, int* cursor) {
 
-    /* commented out for now
 
-
-
-
-    extern int current_user_idx;
-    extern int request_login_screen;
-
-    if (cmd[0] == 0) {
-        return;
+    // --- Shell Script Detection and Loading ---
+    // If the command is a filename ending with .sh and is a file, treat as script
+    int cmdlen = str_len(cmd);
+    if (cmdlen > 3 && cmd[cmdlen-3] == '.' && cmd[cmdlen-2] == 's' && cmd[cmdlen-1] == 'h') {
+        int idx = resolve_path(cmd);
+        if (idx != -1 && node_table[idx].used && node_table[idx].type == NODE_FILE) {
+            // Read file content and execute each line as a shell command
+            char* content = node_table[idx].content;
+            int size = node_table[idx].content_size;
+            int line_start = 0;
+            for (int i = 0; i <= size; i++) {
+                if (content[i] == '\n' || content[i] == 0) {
+                    char line[MAX_CMD_BUFFER];
+                    int len = i - line_start;
+                    if (len > 0 && len < MAX_CMD_BUFFER) {
+                        // Copy line
+                        for (int j = 0; j < len; j++) line[j] = content[line_start + j];
+                        line[len] = 0;
+                        // --- Trim leading and trailing whitespace ---
+                        int l = 0;
+                        while (line[l] == ' ' || line[l] == '\t') l++;
+                        int r = len - 1;
+                        while (r >= l && (line[r] == ' ' || line[r] == '\t')) r--;
+                        int trimmed_len = r - l + 1;
+                        if (trimmed_len > 0) {
+                            char trimmed[MAX_CMD_BUFFER];
+                            for (int t = 0; t < trimmed_len; t++) trimmed[t] = line[l + t];
+                            trimmed[trimmed_len] = 0;
+                            // Skip blank and comment lines
+                            int is_blank = 1;
+                            for (int k = 0; k < trimmed_len; k++) {
+                                if (trimmed[k] != ' ' && trimmed[k] != '\t') { is_blank = 0; break; }
+                            }
+                            if (!is_blank && trimmed[0] != '#') {
+                                dispatch_command(trimmed, video, cursor);
+                            }
+                        }
+                    }
+                    line_start = i + 1;
+                }
+            }
+            print_string("[script finished]", -1, video, cursor, COLOR_LIGHT_GREEN);
+            return;
+        }
     }
-
-    if (mini_strcmp(cmd, "logout") == 0) {
-        current_user_idx = -1;
-        request_login_screen = 1;
-        return;
-    }
-
-    if (current_user_idx < 0) {
-        print_string("Access denied: login required.", -1, video, cursor, COLOR_LIGHT_RED);
-        return;
-    }
-    
-    
-    
-    */
 
 
 
