@@ -54,6 +54,10 @@ static uint16_t udpecho_port = 0;
 #define MAX_VARS 32
 #define MAX_VAR_NAME 32
 #define MAX_VAR_VALUE 128
+// --- Script Arguments ---
+#define MAX_SCRIPT_ARGS 9
+static char script_args[MAX_SCRIPT_ARGS][MAX_VAR_VALUE];
+static int script_argc = 0;
 typedef struct {
     char name[MAX_VAR_NAME];
     char value[MAX_VAR_VALUE];
@@ -99,16 +103,26 @@ static void substitute_vars(const char* src, char* dest, int max_len) {
     while (src[si] && di < max_len - 1) {
         if (src[si] == '$') {
             si++;
-            char varname[MAX_VAR_NAME];
-            int vi = 0;
-            while ((src[si] >= 'A' && src[si] <= 'Z') || (src[si] >= 'a' && src[si] <= 'z') || (src[si] >= '0' && src[si] <= '9') || src[si] == '_') {
-                if (vi < MAX_VAR_NAME - 1) varname[vi++] = src[si];
+            // Check for $1-$9 (script arguments)
+            if (src[si] >= '1' && src[si] <= '9') {
+                int arg_idx = src[si] - '1';
                 si++;
-            }
-            varname[vi] = 0;
-            const char* val = get_var(varname);
-            if (val) {
-                for (int vj = 0; val[vj] && di < max_len - 1; vj++) dest[di++] = val[vj];
+                if (arg_idx < script_argc) {
+                    const char* val = script_args[arg_idx];
+                    for (int vj = 0; val[vj] && di < max_len - 1; vj++) dest[di++] = val[vj];
+                }
+            } else {
+                char varname[MAX_VAR_NAME];
+                int vi = 0;
+                while ((src[si] >= 'A' && src[si] <= 'Z') || (src[si] >= 'a' && src[si] <= 'z') || (src[si] >= '0' && src[si] <= '9') || src[si] == '_') {
+                    if (vi < MAX_VAR_NAME - 1) varname[vi++] = src[si];
+                    si++;
+                }
+                varname[vi] = 0;
+                const char* val = get_var(varname);
+                if (val) {
+                    for (int vj = 0; val[vj] && di < max_len - 1; vj++) dest[di++] = val[vj];
+                }
             }
         } else {
             dest[di++] = src[si++];
@@ -2035,17 +2049,21 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
 
     // --- Shell Script Detection and Loading ---
     // If the command is a filename ending with .sh and is a file, treat as script
+    // --- Script Detection: check if first word ends with .sh ---
     int cmdlen = str_len(cmd);
+    char first_word[MAX_NAME_LENGTH];
+    int fw_i = 0;
+    while (cmd[fw_i] && cmd[fw_i] != ' ' && fw_i < MAX_NAME_LENGTH - 1) { first_word[fw_i] = cmd[fw_i]; fw_i++; }
+    first_word[fw_i] = 0;
+    int fwlen = fw_i;
 
     // --- Variable Assignment ---
-    // Detect VAR=VALUE (no spaces around =, VAR must start with letter or _)
     int eq_pos = -1;
     for (int i = 0; cmd[i]; i++) {
         if (cmd[i] == '=') { eq_pos = i; break; }
-        if (cmd[i] == ' ' || cmd[i] == '\t') break; // Only allow VAR=VALUE at start
+        if (cmd[i] == ' ' || cmd[i] == '\t') break;
     }
     if (eq_pos > 0 && eq_pos < MAX_VAR_NAME - 1) {
-        // Check valid variable name
         int valid = ((cmd[0] >= 'A' && cmd[0] <= 'Z') || (cmd[0] >= 'a' && cmd[0] <= 'z') || cmd[0] == '_');
         for (int i = 1; i < eq_pos && valid; i++) {
             if (!((cmd[i] >= 'A' && cmd[i] <= 'Z') || (cmd[i] >= 'a' && cmd[i] <= 'z') || (cmd[i] >= '0' && cmd[i] <= '9') || cmd[i] == '_')) valid = 0;
@@ -2068,8 +2086,26 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
     char substituted[MAX_CMD_BUFFER];
     substitute_vars(cmd, substituted, MAX_CMD_BUFFER);
     cmd = substituted;
-    if (cmdlen > 3 && cmd[cmdlen-3] == '.' && cmd[cmdlen-2] == 's' && cmd[cmdlen-1] == 'h') {
-        int idx = resolve_path(cmd);
+
+    // --- Script Detection (first word ends with .sh) ---
+    if (fwlen > 3 && first_word[fwlen-3] == '.' && first_word[fwlen-2] == 's' && first_word[fwlen-1] == 'h') {
+        // Parse arguments: cmd = "script.sh arg1 arg2 ..."
+        char script_name[MAX_NAME_LENGTH];
+        int ci = 0, si = 0;
+        // Copy script name (up to first space)
+        while (cmd[ci] && cmd[ci] != ' ' && ci < MAX_NAME_LENGTH - 1) script_name[si++] = cmd[ci++];
+        script_name[si] = 0;
+        // Parse up to 9 arguments
+        script_argc = 0;
+        while (cmd[ci] == ' ') ci++;
+        for (int argn = 0; argn < MAX_SCRIPT_ARGS && cmd[ci]; argn++) {
+            int ai = 0;
+            while (cmd[ci] && cmd[ci] != ' ' && ai < MAX_VAR_VALUE - 1) script_args[argn][ai++] = cmd[ci++];
+            script_args[argn][ai] = 0;
+            script_argc++;
+            while (cmd[ci] == ' ') ci++;
+        }
+        int idx = resolve_path(script_name);
         if (idx != -1 && node_table[idx].used && node_table[idx].type == NODE_FILE) {
             // Read file content and execute each line as a shell command
             char* content = node_table[idx].content;
@@ -2099,7 +2135,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
                                 if (trimmed[k] != ' ' && trimmed[k] != '\t') { is_blank = 0; break; }
                             }
                             if (!is_blank && trimmed[0] != '#') {
-                                // --- Variable substitution for each script line ---
+                                // --- Variable and argument substitution for each script line ---
                                 char substituted[MAX_CMD_BUFFER];
                                 substitute_vars(trimmed, substituted, MAX_CMD_BUFFER);
                                 dispatch_command(substituted, video, cursor);
@@ -2110,6 +2146,9 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
                 }
             }
             print_string("[script finished]", -1, video, cursor, COLOR_LIGHT_GREEN);
+            // Clear script args after script finishes
+            script_argc = 0;
+            for (int i = 0; i < MAX_SCRIPT_ARGS; i++) script_args[i][0] = 0;
             return;
         }
     }
