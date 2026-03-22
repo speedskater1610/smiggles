@@ -1,5 +1,6 @@
 // ...existing code...
 #include "kernel.h"
+#include <stddef.h>
 // Declare read_line function
 void read_line(char* buf, int max_len, char* video, int* cursor);
 // Declare get_key function
@@ -48,6 +49,73 @@ char history[10][64];
 int history_count = 0;
 static int udpecho_fd = -1;
 static uint16_t udpecho_port = 0;
+
+// --- Shell Variables ---
+#define MAX_VARS 32
+#define MAX_VAR_NAME 32
+#define MAX_VAR_VALUE 128
+typedef struct {
+    char name[MAX_VAR_NAME];
+    char value[MAX_VAR_VALUE];
+    int used;
+} ShellVar;
+static ShellVar shell_vars[MAX_VARS];
+
+// Helper: find variable index by name
+static int find_var(const char* name) {
+    for (int i = 0; i < MAX_VARS; i++) {
+        if (shell_vars[i].used && str_equal(shell_vars[i].name, name)) return i;
+    }
+    return -1;
+}
+
+// Helper: set variable (create or update)
+static void set_var(const char* name, const char* value) {
+    int idx = find_var(name);
+    if (idx == -1) {
+        for (int i = 0; i < MAX_VARS; i++) {
+            if (!shell_vars[i].used) {
+                str_copy(shell_vars[i].name, name, MAX_VAR_NAME);
+                str_copy(shell_vars[i].value, value, MAX_VAR_VALUE);
+                shell_vars[i].used = 1;
+                return;
+            }
+        }
+    } else {
+        str_copy(shell_vars[idx].value, value, MAX_VAR_VALUE);
+    }
+}
+
+// Helper: get variable value (returns pointer or NULL)
+static const char* get_var(const char* name) {
+    int idx = find_var(name);
+    if (idx != -1) return shell_vars[idx].value;
+    return NULL;
+}
+
+// Substitute $VAR in src into dest (dest must be large enough)
+static void substitute_vars(const char* src, char* dest, int max_len) {
+    int si = 0, di = 0;
+    while (src[si] && di < max_len - 1) {
+        if (src[si] == '$') {
+            si++;
+            char varname[MAX_VAR_NAME];
+            int vi = 0;
+            while ((src[si] >= 'A' && src[si] <= 'Z') || (src[si] >= 'a' && src[si] <= 'z') || (src[si] >= '0' && src[si] <= '9') || src[si] == '_') {
+                if (vi < MAX_VAR_NAME - 1) varname[vi++] = src[si];
+                si++;
+            }
+            varname[vi] = 0;
+            const char* val = get_var(varname);
+            if (val) {
+                for (int vj = 0; val[vj] && di < max_len - 1; vj++) dest[di++] = val[vj];
+            }
+        } else {
+            dest[di++] = src[si++];
+        }
+    }
+    dest[di] = 0;
+}
 
 // --- User Authentication ---
 void handle_login_command(char* video, int* cursor) {
@@ -1968,6 +2036,38 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
     // --- Shell Script Detection and Loading ---
     // If the command is a filename ending with .sh and is a file, treat as script
     int cmdlen = str_len(cmd);
+
+    // --- Variable Assignment ---
+    // Detect VAR=VALUE (no spaces around =, VAR must start with letter or _)
+    int eq_pos = -1;
+    for (int i = 0; cmd[i]; i++) {
+        if (cmd[i] == '=') { eq_pos = i; break; }
+        if (cmd[i] == ' ' || cmd[i] == '\t') break; // Only allow VAR=VALUE at start
+    }
+    if (eq_pos > 0 && eq_pos < MAX_VAR_NAME - 1) {
+        // Check valid variable name
+        int valid = ((cmd[0] >= 'A' && cmd[0] <= 'Z') || (cmd[0] >= 'a' && cmd[0] <= 'z') || cmd[0] == '_');
+        for (int i = 1; i < eq_pos && valid; i++) {
+            if (!((cmd[i] >= 'A' && cmd[i] <= 'Z') || (cmd[i] >= 'a' && cmd[i] <= 'z') || (cmd[i] >= '0' && cmd[i] <= '9') || cmd[i] == '_')) valid = 0;
+        }
+        if (valid) {
+            char varname[MAX_VAR_NAME];
+            char varval[MAX_VAR_VALUE];
+            for (int i = 0; i < eq_pos && i < MAX_VAR_NAME - 1; i++) varname[i] = cmd[i];
+            varname[eq_pos] = 0;
+            int vi = 0;
+            for (int i = eq_pos + 1; cmd[i] && vi < MAX_VAR_VALUE - 1; i++) varval[vi++] = cmd[i];
+            varval[vi] = 0;
+            set_var(varname, varval);
+            print_string("[variable set]", -1, video, cursor, COLOR_LIGHT_GREEN);
+            return;
+        }
+    }
+
+    // --- Variable Substitution ---
+    char substituted[MAX_CMD_BUFFER];
+    substitute_vars(cmd, substituted, MAX_CMD_BUFFER);
+    cmd = substituted;
     if (cmdlen > 3 && cmd[cmdlen-3] == '.' && cmd[cmdlen-2] == 's' && cmd[cmdlen-1] == 'h') {
         int idx = resolve_path(cmd);
         if (idx != -1 && node_table[idx].used && node_table[idx].type == NODE_FILE) {
@@ -1999,7 +2099,10 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
                                 if (trimmed[k] != ' ' && trimmed[k] != '\t') { is_blank = 0; break; }
                             }
                             if (!is_blank && trimmed[0] != '#') {
-                                dispatch_command(trimmed, video, cursor);
+                                // --- Variable substitution for each script line ---
+                                char substituted[MAX_CMD_BUFFER];
+                                substitute_vars(trimmed, substituted, MAX_CMD_BUFFER);
+                                dispatch_command(substituted, video, cursor);
                             }
                         }
                     }
