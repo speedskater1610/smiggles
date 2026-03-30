@@ -143,11 +143,19 @@ void handle_login_command(char* video, int* cursor) {
     shell_read_line("Username: ", username, MAX_NAME_LENGTH, video, cursor);
     shell_read_line("Password: ", password, MAX_NAME_LENGTH, video, cursor);
 
+    unsigned char hash[HASH_SIZE];
+    hash_password(password, hash);
     for (int i = 0; i < user_count; i++) {
-        if (mini_strcmp(username, user_table[i].username) == 0 && mini_strcmp(password, user_table[i].password) == 0) {
-            current_user_idx = i;
-            print_string("Login successful!", -1, video, cursor, COLOR_LIGHT_GREEN);
-            return;
+        if (mini_strcmp(username, user_table[i].username) == 0) {
+            int match = 1;
+            for (int j = 0; j < HASH_SIZE; j++) {
+                if (user_table[i].password_hash[j] != hash[j]) { match = 0; break; }
+            }
+            if (match) {
+                current_user_idx = i;
+                print_string("Login successful!", -1, video, cursor, COLOR_LIGHT_GREEN);
+                return;
+            }
         }
     }
     print_string("Login failed.", -1, video, cursor, COLOR_LIGHT_RED);
@@ -2045,6 +2053,37 @@ static void handle_cp_command(const char* args, char* video, int* cursor) {
 
 // --- Main Command Dispatcher ---
 void dispatch_command(const char* cmd, char* video, int* cursor) {
+    // Debug: print password hash for a user
+    if (cmd[0] == 'd' && cmd[1] == 'e' && cmd[2] == 'b' && cmd[3] == 'u' && cmd[4] == 'g' && cmd[5] == 'h' && cmd[6] == 'a' && cmd[7] == 's' && cmd[8] == 'h' && cmd[9] == ' ') {
+        char username[MAX_NAME_LENGTH];
+        int i = 10, u = 0;
+        while (cmd[i] == ' ') i++;
+        while (cmd[i] && u < MAX_NAME_LENGTH-1) username[u++] = cmd[i++];
+        username[u] = 0;
+        extern User user_table[MAX_USERS];
+        extern int user_count;
+        int found = 0;
+        for (int j = 0; j < user_count; j++) {
+            if (mini_strcmp(username, user_table[j].username) == 0) {
+                found = 1;
+                char hex[3*HASH_SIZE+1];
+                int h = 0;
+                for (int k = 0; k < HASH_SIZE; k++) {
+                    unsigned char byte = user_table[j].password_hash[k];
+                    const char* hexchars = "0123456789ABCDEF";
+                    hex[h++] = hexchars[(byte >> 4) & 0xF];
+                    hex[h++] = hexchars[byte & 0xF];
+                    hex[h++] = ' ';
+                }
+                hex[h] = 0;
+                print_string("Password hash: ", -1, video, cursor, COLOR_YELLOW);
+                print_string(hex, -1, video, cursor, COLOR_YELLOW);
+                return;
+            }
+        }
+        if (!found) print_string("User not found.", -1, video, cursor, COLOR_LIGHT_RED);
+        return;
+    }
 
 
     // --- Shell Script Detection and Loading ---
@@ -2293,7 +2332,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
         shell_read_line("New username: ", new_username, MAX_NAME_LENGTH, video, cursor);
         shell_read_line("New password: ", new_password, MAX_NAME_LENGTH, video, cursor);
         str_copy(user_table[target_idx].username, new_username, MAX_NAME_LENGTH);
-        str_copy(user_table[target_idx].password, new_password, MAX_NAME_LENGTH);
+        hash_password(new_password, user_table[target_idx].password_hash);
         fs_save();
         print_string("User updated.", -1, video, cursor, COLOR_LIGHT_GREEN);
         return;
@@ -2343,7 +2382,8 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
         shell_read_line("New password: ", password, MAX_NAME_LENGTH, video, cursor);
         user_table[user_count].is_admin = 0;
         str_copy(user_table[user_count].username, username, MAX_NAME_LENGTH);
-        str_copy(user_table[user_count].password, password, MAX_NAME_LENGTH);
+        hash_password(password, user_table[user_count].password_hash);
+        user_table[user_count].groups = GROUP_USERS; // Default group
         user_count++;
         extern void fs_save();
         fs_save();

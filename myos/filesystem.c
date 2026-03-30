@@ -406,11 +406,13 @@ void init_filesystem() {
     extern User user_table[MAX_USERS];
     extern int user_count;
     str_copy(user_table[0].username, "admin", 32);
-    str_copy(user_table[0].password, "admin", 32);
+    hash_password("admin", user_table[0].password_hash);
     user_table[0].is_admin = 1;
+    user_table[0].groups = GROUP_ADMIN | GROUP_USERS;
     str_copy(user_table[1].username, "user", 32);
-    str_copy(user_table[1].password, "password", 32);
+    hash_password("password", user_table[1].password_hash);
     user_table[1].is_admin = 0;
+    user_table[1].groups = GROUP_USERS;
     user_count = 2;
 }
 

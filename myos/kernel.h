@@ -31,11 +31,26 @@
 #define MAX_NODES 32
 // --- User Authentication ---
 #define MAX_USERS 8
+
+#define MAX_GROUPS 8
+#define HASH_SIZE 32 // 256-bit hash
+
 typedef struct {
-     char username[MAX_NAME_LENGTH];
-     char password[MAX_NAME_LENGTH];
-     int is_admin;
+    char username[MAX_NAME_LENGTH];
+    unsigned char password_hash[HASH_SIZE];
+    int is_admin;
+    unsigned int groups; // bitmask for group membership
 } User;
+
+// Group definitions
+#define GROUP_ADMIN   0x01
+#define GROUP_USERS   0x02
+#define GROUP_GUESTS  0x04
+#define GROUP_NET     0x08
+#define GROUP_DEV     0x10
+
+// Hashing
+void hash_password(const char* password, unsigned char* out_hash);
 
 extern User user_table[MAX_USERS];
 extern int user_count;
