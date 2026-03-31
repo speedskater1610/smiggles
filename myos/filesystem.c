@@ -646,7 +646,7 @@ int fs_touch(const char* path, const char* content) {
     }
 
     // New file creation is admin-only
-    if (current_user_idx < 0 || current_user_idx >= user_count || !user_table[current_user_idx].is_admin) {
+    if (current_user_idx < 0 || current_user_idx >= user_count || !IS_EFFECTIVE_ADMIN(current_user_idx)) {
         return -5;
     }
     

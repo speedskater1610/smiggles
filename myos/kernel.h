@@ -1,3 +1,4 @@
+#define IS_EFFECTIVE_ADMIN(idx) (user_table[idx].is_admin || (user_table[idx].groups & group_table[0].bitmask))
 #define COLOR_BLACK         0x00
 #define COLOR_BLUE          0x01
 #define COLOR_GREEN         0x02
@@ -33,6 +34,15 @@
 #define MAX_USERS 8
 
 #define MAX_GROUPS 8
+
+typedef struct {
+    char name[MAX_NAME_LENGTH];
+    unsigned int bitmask; // 1, 2, 4, 8, ...
+    int used;
+} Group;
+
+extern Group group_table[MAX_GROUPS];
+extern int group_count;
 #define HASH_SIZE 32 // 256-bit hash
 
 typedef struct {

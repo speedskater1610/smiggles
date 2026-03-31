@@ -1,4 +1,3 @@
-// ...existing code...
 #include "kernel.h"
 #include <stddef.h>
 // Declare read_line function
@@ -49,6 +48,16 @@ char history[10][64];
 int history_count = 0;
 static int udpecho_fd = -1;
 static uint16_t udpecho_port = 0;
+
+// --- Dynamic Groups ---
+Group group_table[MAX_GROUPS] = {
+    {"admin", 0x01, 1},
+    {"users", 0x02, 1},
+    {"guests", 0x04, 1},
+    {"net", 0x08, 1},
+    {"dev", 0x10, 1},
+};
+int group_count = 5;
 
 // --- Shell Variables ---
 #define MAX_VARS 32
@@ -443,7 +452,7 @@ static void handle_cat_command(const char* filename, char* video, int* cursor, u
     extern User user_table[MAX_USERS];
     int allowed = 0;
     if (current_user_idx >= 0) {
-        if (node_table[node_idx].owner_idx == current_user_idx || user_table[current_user_idx].is_admin) {
+        if (node_table[node_idx].owner_idx == current_user_idx || IS_EFFECTIVE_ADMIN(current_user_idx)) {
             allowed = 1;
         } else if ((user_table[current_user_idx].groups & node_table[node_idx].group) != 0) {
             // Group member: check group read bit (bit 5)
@@ -501,7 +510,7 @@ static void handle_rm_command(const char* filename, char* video, int* cursor, un
     extern User user_table[MAX_USERS];
     int allowed = 0;
     if (current_user_idx >= 0) {
-        if (node_table[idx].owner_idx == current_user_idx || user_table[current_user_idx].is_admin) {
+        if (node_table[idx].owner_idx == current_user_idx || IS_EFFECTIVE_ADMIN(current_user_idx)) {
             allowed = 1;
         } else if ((user_table[current_user_idx].groups & node_table[idx].group) != 0) {
             // Group member: check group write bit (bit 4)
@@ -552,7 +561,7 @@ static void handle_mv_command(const char* oldname, const char* newname, char* vi
     extern User user_table[MAX_USERS];
     int allowed = 0;
     if (current_user_idx >= 0) {
-        if (node_table[src_idx].owner_idx == current_user_idx || user_table[current_user_idx].is_admin) {
+        if (node_table[src_idx].owner_idx == current_user_idx || IS_EFFECTIVE_ADMIN(current_user_idx)) {
             allowed = 1;
         } else if ((user_table[current_user_idx].groups & node_table[src_idx].group) != 0) {
             // Group member: check group write bit (bit 4)
@@ -2090,24 +2099,118 @@ static void handle_cp_command(const char* args, char* video, int* cursor) {
 
 // --- Main Command Dispatcher ---
 void dispatch_command(const char* cmd, char* video, int* cursor) {
-            // listgroups: show all group names and bitmasks
+                // creategroup <name>
+                if (cmd[0] == 'c' && cmd[1] == 'r' && cmd[2] == 'e' && cmd[3] == 'a' && cmd[4] == 't' && cmd[5] == 'e' && cmd[6] == 'g' && cmd[7] == 'r' && cmd[8] == 'o' && cmd[9] == 'u' && cmd[10] == 'p' && cmd[11] == ' ') {
+                    extern int current_user_idx;
+                    if (current_user_idx < 0 || !IS_EFFECTIVE_ADMIN(current_user_idx)) {
+                        print_string("Access denied: admin only.\n", -1, video, cursor, COLOR_LIGHT_RED);
+                        return;
+                    }
+                    int i = 12;
+                    while (cmd[i] == ' ') i++;
+                    char name[MAX_NAME_LENGTH];
+                    int n = 0;
+                    while (cmd[i] && n < MAX_NAME_LENGTH-1) name[n++] = cmd[i++];
+                    name[n] = 0;
+                    if (name[0] == 0) {
+                        print_string("Usage: creategroup <name>\n", -1, video, cursor, COLOR_YELLOW);
+                        return;
+                    }
+                    // Check for duplicate
+                    for (int g = 0; g < group_count; g++) {
+                        if (group_table[g].used && mini_strcmp(name, group_table[g].name) == 0) {
+                            print_string("Group already exists.\n", -1, video, cursor, COLOR_LIGHT_RED);
+                            return;
+                        }
+                    }
+                    if (group_count >= MAX_GROUPS) {
+                        print_string("Max groups reached.\n", -1, video, cursor, COLOR_LIGHT_RED);
+                        return;
+                    }
+                    // Find next available bitmask
+                    unsigned int mask = 1;
+                    for (int b = 0; b < 32; b++) {
+                        int used = 0;
+                        for (int g = 0; g < group_count; g++) {
+                            if (group_table[g].used && group_table[g].bitmask == mask) used = 1;
+                        }
+                        if (!used) break;
+                        mask <<= 1;
+                    }
+                    group_table[group_count].used = 1;
+                    str_copy(group_table[group_count].name, name, MAX_NAME_LENGTH);
+                    group_table[group_count].bitmask = mask;
+                    group_count++;
+                    print_string("Group created.\n", -1, video, cursor, COLOR_LIGHT_GREEN);
+                    return;
+                }
+
+                // delgroup <name>
+                if (cmd[0] == 'd' && cmd[1] == 'e' && cmd[2] == 'l' && cmd[3] == 'g' && cmd[4] == 'r' && cmd[5] == 'o' && cmd[6] == 'u' && cmd[7] == 'p' && cmd[8] == ' ') {
+                    extern int current_user_idx;
+                    if (current_user_idx < 0 || !IS_EFFECTIVE_ADMIN(current_user_idx)) {
+                        print_string("Access denied: admin only.\n", -1, video, cursor, COLOR_LIGHT_RED);
+                        return;
+                    }
+                    int i = 9;
+                    while (cmd[i] == ' ') i++;
+                    char name[MAX_NAME_LENGTH];
+                    int n = 0;
+                    while (cmd[i] && n < MAX_NAME_LENGTH-1) name[n++] = cmd[i++];
+                    name[n] = 0;
+                    if (name[0] == 0) {
+                        print_string("Usage: delgroup <name>\n", -1, video, cursor, COLOR_YELLOW);
+                        return;
+                    }
+                    int found = 0;
+                    for (int g = 0; g < group_count; g++) {
+                        if (group_table[g].used && mini_strcmp(name, group_table[g].name) == 0) {
+                            group_table[g].used = 0;
+                            found = 1;
+                            // Remove group from all users
+                            for (int u = 0; u < user_count; u++) {
+                                user_table[u].groups &= ~group_table[g].bitmask;
+                            }
+                            print_string("Group deleted.\n", -1, video, cursor, COLOR_LIGHT_GREEN);
+                            break;
+                        }
+                    }
+                    if (!found) print_string("Group not found.\n", -1, video, cursor, COLOR_LIGHT_RED);
+                    return;
+                }
+            // listgroups: show all group names and bitmasks (dynamic)
             if (mini_strcmp(cmd, "listgroups") == 0) {
                 print_string("Groups:\n", -1, video, cursor, COLOR_YELLOW);
-                print_string("  0x01 GROUP_ADMIN\n", -1, video, cursor, COLOR_YELLOW);
-                print_string("  0x02 GROUP_USERS\n", -1, video, cursor, COLOR_YELLOW);
-                print_string("  0x04 GROUP_GUESTS\n", -1, video, cursor, COLOR_YELLOW);
-                print_string("  0x08 GROUP_NET\n", -1, video, cursor, COLOR_YELLOW);
-                print_string("  0x10 GROUP_DEV\n", -1, video, cursor, COLOR_YELLOW);
+                for (int g = 0; g < group_count; g++) {
+                    if (group_table[g].used) {
+                        char buf[64];
+                        int n = 0;
+                        buf[n++] = ' ';
+                        buf[n++] = '0'; buf[n++] = 'x';
+                        const char hex[] = "0123456789ABCDEF";
+                        unsigned int m = group_table[g].bitmask;
+                        buf[n++] = hex[(m >> 4) & 0xF];
+                        buf[n++] = hex[m & 0xF];
+                        buf[n++] = ' ';
+                        int i = 0;
+                        while (group_table[g].name[i] && n < 63) buf[n++] = group_table[g].name[i++];
+                        buf[n++] = '\n';
+                        buf[n] = 0;
+                        print_string(buf, -1, video, cursor, COLOR_YELLOW);
+                    }
+                }
                 return;
             }
 
-            // lsgroup <mask>: list users in a group
+            // lsgroup <mask|name>: list users in a group (by mask or name)
             if (cmd[0] == 'l' && cmd[1] == 's' && cmd[2] == 'g' && cmd[3] == 'r' && cmd[4] == 'o' && cmd[5] == 'u' && cmd[6] == 'p' && cmd[7] == ' ') {
                 int i = 8;
                 while (cmd[i] == ' ') i++;
-                int groupmask = 0;
+                // Try to parse as mask (hex or decimal)
+                int groupmask = -1;
                 if (cmd[i] == '0' && (cmd[i+1] == 'x' || cmd[i+1] == 'X')) {
                     i += 2;
+                    groupmask = 0;
                     while (cmd[i]) {
                         char c = cmd[i];
                         if (c >= '0' && c <= '9') groupmask = (groupmask << 4) | (c - '0');
@@ -2116,14 +2219,29 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
                         else break;
                         i++;
                     }
-                } else {
+                } else if (cmd[i] >= '0' && cmd[i] <= '9') {
+                    groupmask = 0;
                     while (cmd[i] >= '0' && cmd[i] <= '9') {
                         groupmask = groupmask * 10 + (cmd[i] - '0');
                         i++;
                     }
+                } else {
+                    // Try to match by group name
+                    char name[MAX_NAME_LENGTH];
+                    int n = 0;
+                    while (cmd[i] && cmd[i] != ' ' && n < MAX_NAME_LENGTH-1) name[n++] = cmd[i++];
+                    name[n] = 0;
+                    for (int g = 0; g < group_count; g++) {
+                        if (group_table[g].used && mini_strcmp(name, group_table[g].name) == 0) {
+                            groupmask = group_table[g].bitmask;
+                            break;
+                        }
+                    }
                 }
-                extern User user_table[MAX_USERS];
-                extern int user_count;
+                if (groupmask == -1) {
+                    print_string("Group not found.\n", -1, video, cursor, COLOR_LIGHT_RED);
+                    return;
+                }
                 int found = 0;
                 for (int j = 0; j < user_count; j++) {
                     if ((user_table[j].groups & groupmask) != 0) {
@@ -2136,7 +2254,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
                 return;
             }
 
-            // whois <username>: show user's group bitmask
+            // whois <username>: show user's group bitmask and group names (dynamic)
             if (cmd[0] == 'w' && cmd[1] == 'h' && cmd[2] == 'o' && cmd[3] == 'i' && cmd[4] == 's' && cmd[5] == ' ') {
                 int i = 6;
                 while (cmd[i] == ' ') i++;
@@ -2144,8 +2262,6 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
                 int u = 0;
                 while (cmd[i] && u < MAX_NAME_LENGTH-1) username[u++] = cmd[i++];
                 username[u] = 0;
-                extern User user_table[MAX_USERS];
-                extern int user_count;
                 int found = 0;
                 for (int j = 0; j < user_count; j++) {
                     if (mini_strcmp(username, user_table[j].username) == 0) {
@@ -2159,11 +2275,14 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
                         buf[12] = '\n';
                         buf[13] = 0;
                         print_string(buf, -1, video, cursor, COLOR_YELLOW);
-                        if (g & 0x01) print_string("  GROUP_ADMIN\n", -1, video, cursor, COLOR_YELLOW);
-                        if (g & 0x02) print_string("  GROUP_USERS\n", -1, video, cursor, COLOR_YELLOW);
-                        if (g & 0x04) print_string("  GROUP_GUESTS\n", -1, video, cursor, COLOR_YELLOW);
-                        if (g & 0x08) print_string("  GROUP_NET\n", -1, video, cursor, COLOR_YELLOW);
-                        if (g & 0x10) print_string("  GROUP_DEV\n", -1, video, cursor, COLOR_YELLOW);
+                        // Print all group names for which user is a member
+                        for (int gr = 0; gr < group_count; gr++) {
+                            if (group_table[gr].used && (g & group_table[gr].bitmask)) {
+                                print_string("  ", 2, video, cursor, COLOR_YELLOW);
+                                print_string(group_table[gr].name, -1, video, cursor, COLOR_YELLOW);
+                                print_string("\n", 1, video, cursor, COLOR_YELLOW);
+                            }
+                        }
                         break;
                     }
                 }
@@ -2175,7 +2294,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
             extern int current_user_idx;
             extern User user_table[MAX_USERS];
             extern int user_count;
-            if (current_user_idx < 0 || !user_table[current_user_idx].is_admin) {
+            if (current_user_idx < 0 || !IS_EFFECTIVE_ADMIN(current_user_idx)) {
                 print_string("Access denied: admin only.", -1, video, cursor, COLOR_LIGHT_RED);
                 return;
             }
@@ -2381,7 +2500,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
             print_string("File not found.", -1, video, cursor, COLOR_LIGHT_RED);
             return;
         }
-        if (node_table[idx].owner_idx != current_user_idx && !user_table[current_user_idx].is_admin) {
+        if (node_table[idx].owner_idx != current_user_idx && !IS_EFFECTIVE_ADMIN(current_user_idx)) {
             // Allow group members with group write permission to change permissions
             if ((user_table[current_user_idx].groups & node_table[idx].group) != 0 && (node_table[idx].permissions & 0x10) != 0) {
                 // allowed
@@ -2438,7 +2557,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
         extern User user_table[MAX_USERS];
         extern int user_count;
         extern void shell_read_line(char* prompt, char* buf, int max_len, char* video, int* cursor);
-        if (current_user_idx < 0 || !user_table[current_user_idx].is_admin) {
+        if (current_user_idx < 0 || !IS_EFFECTIVE_ADMIN(current_user_idx)) {
             print_string("Access denied: admin only.", -1, video, cursor, COLOR_LIGHT_RED);
             return;
         }
@@ -2483,7 +2602,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
             print_string("Not logged in.", -1, video, cursor, COLOR_LIGHT_RED);
             return;
         }
-        if (user_table[current_user_idx].is_admin) {
+        if (IS_EFFECTIVE_ADMIN(current_user_idx)) {
             char username[MAX_NAME_LENGTH];
             shell_read_line("Current username: ", username, MAX_NAME_LENGTH, video, cursor);
             for (int i = 0; i < user_count; i++) {
@@ -2520,7 +2639,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
             n += str_len(user_table[i].username);
             str_copy(buf+n, " [", 3);
             n += str_len(" [");
-            buf[n++] = user_table[i].is_admin ? 'A' : 'U';
+            buf[n++] = IS_EFFECTIVE_ADMIN(i) ? 'A' : 'U';
             buf[n++] = ']';
             buf[n++] = 0;
             print_string(buf, -1, video, cursor, COLOR_LIGHT_CYAN);
@@ -2533,7 +2652,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
         extern User user_table[MAX_USERS];
         extern int user_count;
         extern void shell_read_line(char* prompt, char* buf, int max_len, char* video, int* cursor);
-        if (current_user_idx < 0 || !user_table[current_user_idx].is_admin) {
+        if (current_user_idx < 0 || !IS_EFFECTIVE_ADMIN(current_user_idx)) {
             print_string("Access denied: admin only.", -1, video, cursor, COLOR_LIGHT_RED);
             return;
         }
@@ -2569,7 +2688,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
         extern User user_table[MAX_USERS];
         extern int user_count;
         extern void shell_read_line(char* prompt, char* buf, int max_len, char* video, int* cursor);
-        if (current_user_idx < 0 || !user_table[current_user_idx].is_admin) {
+        if (current_user_idx < 0 || !IS_EFFECTIVE_ADMIN(current_user_idx)) {
             print_string("Access denied: admin only.", -1, video, cursor, COLOR_LIGHT_RED);
             return;
         }
@@ -2578,7 +2697,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
         int idx = -1;
         int admin_count = 0;
         for (int i = 0; i < user_count; i++) {
-            if (user_table[i].is_admin) admin_count++;
+            if (IS_EFFECTIVE_ADMIN(i)) admin_count++;
             if (mini_strcmp(username, user_table[i].username) == 0) idx = i;
         }
         if (idx == -1) {
@@ -2589,7 +2708,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
             print_string("Cannot delete current user.", -1, video, cursor, COLOR_LIGHT_RED);
             return;
         }
-        if (user_table[idx].is_admin && admin_count <= 1) {
+        if (IS_EFFECTIVE_ADMIN(idx) && admin_count <= 1) {
             print_string("Cannot delete last admin.", -1, video, cursor, COLOR_LIGHT_RED);
             return;
         }
@@ -2606,7 +2725,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
         extern int current_user_idx;
         extern User user_table[MAX_USERS];
         extern int user_count;
-        if (current_user_idx < 0 || !user_table[current_user_idx].is_admin) {
+        if (current_user_idx < 0 || !IS_EFFECTIVE_ADMIN(current_user_idx)) {
             print_string("Access denied: admin only.", -1, video, cursor, COLOR_LIGHT_RED);
             return;
         }
@@ -2659,7 +2778,7 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
             print_string("File not found", -1, video, cursor, COLOR_LIGHT_RED);
             return;
         }
-        if (current_user_idx < 0 || (node_table[idx].owner_idx != current_user_idx && !user_table[current_user_idx].is_admin)) {
+        if (current_user_idx < 0 || (node_table[idx].owner_idx != current_user_idx && !IS_EFFECTIVE_ADMIN(current_user_idx))) {
             print_string("Permission denied.", -1, video, cursor, COLOR_LIGHT_RED);
             return;
         }
@@ -3739,8 +3858,10 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
             "adduser - add new user\n"
             "deluser - delete user\n"
             "\n---Group management---\n"
+            "creategroup <name> - create a new group (admin only)\n"
+            "delgroup <name> - delete a group (admin only)\n"
             "listgroups - list all groups and bitmasks\n"
-            "lsgroup <mask> - list users in a group (hex or decimal)\n"
+            "lsgroup <mask|name> - list users in a group (hex, decimal, or name)\n"
             "whois <username> - show user's group memberships\n"
             "setgroups <username> <mask> - set user's group bitmask (admin only)\n"
             , -1, video, cursor, COLOR_LIGHT_GREEN);
