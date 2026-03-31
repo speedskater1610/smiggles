@@ -162,6 +162,7 @@ typedef struct FSNode {
     int content_size;
     int used;
     int owner_idx; // index of owning user
+    int group;     // group owner (bitmask or group id)
     unsigned short permissions; // permission bits: rwx for owner/group/others
     } __attribute__((packed)) FSNode;
 

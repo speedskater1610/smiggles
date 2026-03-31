@@ -671,7 +671,12 @@ int fs_touch(const char* path, const char* content) {
     node_table[new_idx].parent_idx = parent_idx;
     node_table[new_idx].child_count = 0;
     str_copy(node_table[new_idx].name, filename, MAX_NAME_LENGTH);
-        node_table[new_idx].owner_idx = current_user_idx; // Set owner to creator
+    node_table[new_idx].owner_idx = current_user_idx; // Set owner to creator
+    if (current_user_idx >= 0 && current_user_idx < user_count) {
+        node_table[new_idx].group = user_table[current_user_idx].groups; // Set group to user's primary group (bitmask)
+    } else {
+        node_table[new_idx].group = GROUP_USERS;
+    }
     
     if (content) {
         int len = 0;
