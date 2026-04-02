@@ -297,6 +297,21 @@ typedef struct {
     uint8_t state;
 } TCPConnInfo;
 
+typedef enum {
+    LOG_LEVEL_DEBUG = 0,
+    LOG_LEVEL_INFO = 1,
+    LOG_LEVEL_WARN = 2,
+    LOG_LEVEL_ERROR = 3
+} LogLevel;
+
+#define LOGGER_MESSAGE_MAX 96
+
+typedef struct {
+    uint32_t tick;
+    uint8_t level;
+    char message[LOGGER_MESSAGE_MAX];
+} LogEntry;
+
 // --- Function Declarations ---
 
 // Memory management
@@ -385,6 +400,16 @@ int str_equal(const char* a, const char* b);
 int mini_strcmp(const char* a, const char* b);
 void int_to_str(int value, char* buf);
 void str_concat(char* dest, const char* src);
+
+// Logger
+void logger_init(void);
+void log_set_level(int level);
+int log_get_level(void);
+const char* log_level_name(int level);
+void log_write(int level, const char* message);
+int log_count(void);
+int log_get_entry(int oldest_index, LogEntry* out_entry);
+void log_clear(void);
 
 // Clipboard
 void clipboard_clear(void);

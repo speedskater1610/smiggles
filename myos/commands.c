@@ -48,6 +48,14 @@ char history[10][64];
 int history_count = 0;
 static int udpecho_fd = -1;
 static uint16_t udpecho_port = 0;
+static int logger_ready = 0;
+
+static void ensure_logger_ready(void) {
+    if (!logger_ready) {
+        logger_init();
+        logger_ready = 1;
+    }
+}
 
 // --- Dynamic Groups ---
 Group group_table[MAX_GROUPS] = {
@@ -162,10 +170,24 @@ void handle_login_command(char* video, int* cursor) {
             }
             if (match) {
                 current_user_idx = i;
+                {
+                    char line[LOGGER_MESSAGE_MAX];
+                    line[0] = 0;
+                    str_concat(line, "auth: login success user=");
+                    str_concat(line, username);
+                    log_write(LOG_LEVEL_INFO, line);
+                }
                 print_string("Login successful!", -1, video, cursor, COLOR_LIGHT_GREEN);
                 return;
             }
         }
+    }
+    {
+        char line[LOGGER_MESSAGE_MAX];
+        line[0] = 0;
+        str_concat(line, "auth: login failed user=");
+        str_concat(line, username);
+        log_write(LOG_LEVEL_WARN, line);
     }
     print_string("Login failed.", -1, video, cursor, COLOR_LIGHT_RED);
 }
@@ -736,6 +758,199 @@ static int parse_nonneg_int(const char* s, int* out) {
     if (s[i] != 0) return 0;
     *out = value;
     return 1;
+}
+
+static unsigned char log_level_color(int level) {
+    if (level == LOG_LEVEL_DEBUG) return COLOR_DARK_GRAY;
+    if (level == LOG_LEVEL_INFO) return COLOR_LIGHT_CYAN;
+    if (level == LOG_LEVEL_WARN) return COLOR_YELLOW;
+    if (level == LOG_LEVEL_ERROR) return COLOR_LIGHT_RED;
+    return COLOR_WHITE;
+}
+
+static int log_count_safe_probe(void) {
+    int count = 0;
+    LogEntry scratch;
+
+    while (count < 256) {
+        if (!log_get_entry(count, &scratch)) break;
+        count++;
+    }
+
+    return count;
+}
+
+static int parse_log_level(const char* text, int* out_level) {
+    int numeric = 0;
+
+    if (!text || !out_level) return 0;
+
+    if (mini_strcmp(text, "debug") == 0) {
+        *out_level = LOG_LEVEL_DEBUG;
+        return 1;
+    }
+    if (mini_strcmp(text, "info") == 0) {
+        *out_level = LOG_LEVEL_INFO;
+        return 1;
+    }
+    if (mini_strcmp(text, "warn") == 0 || mini_strcmp(text, "warning") == 0) {
+        *out_level = LOG_LEVEL_WARN;
+        return 1;
+    }
+    if (mini_strcmp(text, "error") == 0) {
+        *out_level = LOG_LEVEL_ERROR;
+        return 1;
+    }
+
+    if (parse_nonneg_int(text, &numeric) && numeric >= LOG_LEVEL_DEBUG && numeric <= LOG_LEVEL_ERROR) {
+        *out_level = numeric;
+        return 1;
+    }
+
+    return 0;
+}
+
+static void handle_log_show_command(const char* args, char* video, int* cursor) {
+    int requested = 20;
+    int total = log_count_safe_probe();
+    int start;
+    LogEntry entry;
+    char line[192];
+    char value[16];
+    const char* p = args;
+
+    if (!p) p = "";
+    while (*p == ' ') p++;
+
+    if (total > 256) total = 256;
+
+    if (*p) {
+        if (!parse_nonneg_int(p, &requested) || requested <= 0) {
+            print_string("Usage: log show [count]", -1, video, cursor, COLOR_LIGHT_RED);
+            return;
+        }
+    }
+
+    if (total <= 0) {
+        print_string("Logger buffer is empty", -1, video, cursor, COLOR_YELLOW);
+        return;
+    }
+
+    if (requested > total) requested = total;
+    start = total - requested;
+
+    line[0] = 0;
+    str_concat(line, "Showing last ");
+    int_to_str(requested, value); str_concat(line, value);
+    str_concat(line, " of ");
+    int_to_str(total, value); str_concat(line, value);
+    str_concat(line, " log entries");
+    print_string(line, -1, video, cursor, COLOR_LIGHT_GRAY);
+
+    for (int i = start; i < total; i++) {
+        if (!log_get_entry(i, &entry)) continue;
+
+        line[0] = 0;
+        str_concat(line, "[");
+        int_to_str((int)entry.tick, value); str_concat(line, value);
+        str_concat(line, "] ");
+        str_concat(line, log_level_name(entry.level));
+        str_concat(line, ": ");
+        str_concat(line, entry.message);
+
+        print_string(line, -1, video, cursor, log_level_color(entry.level));
+    }
+}
+
+static void handle_log_command(const char* args, char* video, int* cursor) {
+    const char* p = args;
+    int current_level;
+
+    ensure_logger_ready();
+
+    current_level = log_get_level();
+    if (current_level < LOG_LEVEL_DEBUG || current_level > LOG_LEVEL_ERROR) {
+        log_set_level(LOG_LEVEL_INFO);
+        current_level = LOG_LEVEL_INFO;
+    }
+
+    if (!p) p = "";
+    while (*p == ' ') p++;
+
+    if (*p == 0) {
+        char line[96];
+        char value[16];
+
+        line[0] = 0;
+        str_concat(line, "Logger level: ");
+        str_concat(line, log_level_name(current_level));
+        str_concat(line, " (0=debug..3=error)");
+        print_string(line, -1, video, cursor, COLOR_LIGHT_CYAN);
+
+        line[0] = 0;
+        str_concat(line, "Buffered entries: ");
+        {
+            int total = log_count_safe_probe();
+            int_to_str(total, value);
+        }
+        str_concat(line, value);
+        print_string(line, -1, video, cursor, COLOR_LIGHT_CYAN);
+
+        print_string("Usage: log show [count] | log level [name|0-3] | log clear", -1, video, cursor, COLOR_YELLOW);
+        return;
+    }
+
+    if (p[0] == 's' && p[1] == 'h' && p[2] == 'o' && p[3] == 'w' && (p[4] == 0 || p[4] == ' ')) {
+        handle_log_show_command(p[4] == 0 ? "" : p + 5, video, cursor);
+        return;
+    }
+
+    if (p[0] == 'c' && p[1] == 'l' && p[2] == 'e' && p[3] == 'a' && p[4] == 'r' && p[5] == 0) {
+        log_clear();
+        print_string("Logger buffer cleared", -1, video, cursor, COLOR_LIGHT_GREEN);
+        return;
+    }
+
+    if (p[0] == 't' && p[1] == 'e' && p[2] == 's' && p[3] == 't' && p[4] == 0) {
+        log_write(LOG_LEVEL_INFO, "Logger test entry");
+        print_string("Logger test entry written", -1, video, cursor, COLOR_LIGHT_GREEN);
+        return;
+    }
+
+    if (p[0] == 'l' && p[1] == 'e' && p[2] == 'v' && p[3] == 'e' && p[4] == 'l' && (p[5] == 0 || p[5] == ' ')) {
+        if (p[5] == 0) {
+            char line[64];
+            line[0] = 0;
+            str_concat(line, "Logger level: ");
+            str_concat(line, log_level_name(current_level));
+            print_string(line, -1, video, cursor, COLOR_LIGHT_CYAN);
+            return;
+        }
+
+        while (*p == ' ') p++;
+        p += 6;
+        while (*p == ' ') p++;
+
+        {
+            int level = LOG_LEVEL_INFO;
+            if (!parse_log_level(p, &level)) {
+                print_string("Invalid log level. Use debug|info|warn|error or 0-3", -1, video, cursor, COLOR_LIGHT_RED);
+                return;
+            }
+
+            log_set_level(level);
+            {
+                char line[80];
+                line[0] = 0;
+                str_concat(line, "Logger level set to ");
+                str_concat(line, log_level_name(level));
+                print_string(line, -1, video, cursor, COLOR_LIGHT_GREEN);
+            }
+            return;
+        }
+    }
+
+    print_string("Usage: log show [count] | log level [name|0-3] | log clear | log test", -1, video, cursor, COLOR_YELLOW);
 }
 
 static int parse_ipv4_text(const char* s, uint8_t out_ip[4]) {
@@ -2099,6 +2314,24 @@ static void handle_cp_command(const char* args, char* video, int* cursor) {
 
 // --- Main Command Dispatcher ---
 void dispatch_command(const char* cmd, char* video, int* cursor) {
+                ensure_logger_ready();
+                if (cmd && cmd[0]) {
+                    char log_line[LOGGER_MESSAGE_MAX];
+                    int out = 0;
+                    const char* prefix = "cmd: ";
+
+                    while (prefix[out] && out < LOGGER_MESSAGE_MAX - 1) {
+                        log_line[out] = prefix[out];
+                        out++;
+                    }
+
+                    for (int i = 0; cmd[i] && out < LOGGER_MESSAGE_MAX - 1; i++) {
+                        log_line[out++] = cmd[i];
+                    }
+                    log_line[out] = 0;
+                    log_write(LOG_LEVEL_INFO, log_line);
+                }
+
                 // creategroup <name>
                 if (cmd[0] == 'c' && cmd[1] == 'r' && cmd[2] == 'e' && cmd[3] == 'a' && cmd[4] == 't' && cmd[5] == 'e' && cmd[6] == 'g' && cmd[7] == 'r' && cmd[8] == 'o' && cmd[9] == 'u' && cmd[10] == 'p' && cmd[11] == ' ') {
                     extern int current_user_idx;
@@ -3809,6 +4042,12 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
             "about - about Smiggles\n"
             "ver - version info\n"
             "uptime - system uptime\n"
+            "log - logger status and controls\n"
+            "log show [n] - show latest log entries\n"
+            "log level [name|0-3] - get/set log threshold\n"
+            "log clear - clear logger buffer\n"
+            "log test - write a test log entry\n"
+            "dmesg - shortcut for log show 25\n"
             "neofetch - system info\n"
             "basic - BASIC interpreter\n"
             "exec <file.bas> - run BASIC file\n"
@@ -3911,6 +4150,12 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
         handle_ver_command(video, cursor);
     } else if (mini_strcmp(cmd, "uptime") == 0) {
         handle_uptime_command(video, cursor);
+    } else if (mini_strcmp(cmd, "log") == 0) {
+        handle_log_command("", video, cursor);
+    } else if (cmd[0] == 'l' && cmd[1] == 'o' && cmd[2] == 'g' && cmd[3] == ' ') {
+        handle_log_command(cmd + 4, video, cursor);
+    } else if (mini_strcmp(cmd, "dmesg") == 0) {
+        handle_log_show_command("25", video, cursor);
     } else if (cmd[0] == 's' && cmd[1] == 'p' && cmd[2] == 'a' && cmd[3] == 'w' && cmd[4] == 'n' && cmd[5] == ' ') {
         handle_spawn_command(cmd + 6, video, cursor);
     } else if (mini_strcmp(cmd, "ps") == 0) {
@@ -3960,7 +4205,7 @@ void handle_tab_completion(char* cmd_buf, int* cmd_len, int* cmd_cursor, char* v
     const char* commands[] = {
         "ls", "cd", "pwd", "cat", "mkdir", "rmdir", "rm", "touch", "cp", "mv",
         "echo", "edit", "tree", "grep", "clear", "cls", "help", "time", "ping", "exec",
-        "udp", "tcp", "net", "sock", "udpecho", "pkg", "about", "ver", "panic", "halt", "reboot", "history", "df", "fscheck", "free", "uptime", "filesize", "neofetch", "basic", "syscalltest", "fdtest", "spawn", "ps", "kill", "wait"
+        "udp", "tcp", "net", "sock", "udpecho", "pkg", "about", "ver", "panic", "halt", "reboot", "history", "df", "fscheck", "free", "uptime", "log", "dmesg", "filesize", "neofetch", "basic", "syscalltest", "fdtest", "spawn", "ps", "kill", "wait"
     };
     int cmd_count = (int)(sizeof(commands) / sizeof(commands[0]));
     

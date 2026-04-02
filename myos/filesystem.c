@@ -703,9 +703,7 @@ int fs_rm(const char* path, int recursive) {
     int node_idx = resolve_path(path);
     if (node_idx == -1 || node_idx == 0) return -1;
     
-    if (node_table[node_idx].type == NODE_DIRECTORY && !recursive && node_table[node_idx].child_count > 0) {
-        return -2;
-    }
+    if (node_table[node_idx].type == NODE_DIRECTORY && !recursive && node_table[node_idx].child_count > 0) return -2;
     
     int parent_idx = node_table[node_idx].parent_idx;
     
