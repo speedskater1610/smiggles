@@ -4095,19 +4095,30 @@ void dispatch_command(const char* cmd, char* video, int* cursor) {
             "logout - log out\n"
             "edituser - edit account information\n"
             "adduser - add new user\n"
-            "deluser - delete user\n"
-            "\n---Group management---\n"
+            "deluser - delete user\n",
+            -1, video, cursor, COLOR_LIGHT_RED);
+        print_string(    
+            "---Group management---\n"
             "creategroup <name> - create a new group (admin only)\n"
             "delgroup <name> - delete a group (admin only)\n"
             "listgroups - list all groups and bitmasks\n"
             "lsgroup <mask|name> - list users in a group (hex, decimal, or name)\n"
             "whois <username> - show user's group memberships\n"
             "setgroups <username> <mask> - set user's group bitmask (admin only)\n"
-            , -1, video, cursor, COLOR_LIGHT_GREEN);
             "listusers - list all users\n"
             "edituser - edit any account\n"
-            "chown <file> - change file owner",
-            -1, video, cursor, COLOR_LIGHT_GREEN;
+            "chown <file> - change file owner\n",
+            -1, video, cursor, COLOR_LIGHT_GREEN);
+        print_string(
+            "---Log Commands---\n"
+            "log - shows the number of log entries\n"
+            "log show [count] - shows details for the latest log entries\n"
+            "log level [0-3] - 0 sets debug, 1 sets info, 2 sets warn, 3 sets error\n"
+            "log clear - clears the log entries\n"
+            "log test - create a test log entry\n",
+            -1, video, cursor, COLOR_LIGHT_BLUE);
+    
+
 
     } else if (mini_strcmp(cmd, "basic") == 0) {
         basic_repl(video, cursor);

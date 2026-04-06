@@ -35,9 +35,16 @@ typedef struct {
     uint16_t iopb;
 } __attribute__((packed)) TSS32;
 
-static uint64_t gdt[6];
-static GDTPtr gdt_ptr;
-static TSS32 tss;
+static uint64_t gdt[6] __attribute__((aligned(4096))) = {
+    0x0000000000000000ULL,
+    0x00CF9A000000FFFFULL,
+    0x00CF92000000FFFFULL,
+    0x00CFFA000000FFFFULL,
+    0x00CFF2000000FFFFULL,
+    0x0000000000000000ULL
+};
+static GDTPtr gdt_ptr __attribute__((aligned(16)));
+static TSS32 tss __attribute__((aligned(4096)));
 static int protection_ready = 0;
 
 static void set_gdt_entry(int idx, uint32_t base, uint32_t limit, uint8_t access, uint8_t gran) {
@@ -54,16 +61,6 @@ static void set_gdt_entry(int idx, uint32_t base, uint32_t limit, uint8_t access
 }
 
 void init_protection(void) {
-    for (int i = 0; i < 6; i++) gdt[i] = 0;
-
-    // 0x08 Kernel code, 0x10 Kernel data
-    set_gdt_entry(1, 0, 0xFFFFF, 0x9A, 0xCF);
-    set_gdt_entry(2, 0, 0xFFFFF, 0x92, 0xCF);
-
-    // 0x18 User code, 0x20 User data
-    set_gdt_entry(3, 0, 0xFFFFF, 0xFA, 0xCF);
-    set_gdt_entry(4, 0, 0xFFFFF, 0xF2, 0xCF);
-
     // TSS descriptor at 0x28
     for (unsigned int i = 0; i < sizeof(TSS32); i++) {
         ((unsigned char*)&tss)[i] = 0;

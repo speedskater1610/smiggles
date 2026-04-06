@@ -5,11 +5,19 @@ LD=i686-elf-ld
 QEMU=qemu-system-i386
 HOST_UDP_PORT?=15556
 HOST_HTTP_PORT?=18080
+MAX_KERNEL_SECTORS=2879
 
 all: floppy.img hdd.img
 
-boot.bin: boot.asm
-	$(ASM) -f bin boot.asm -o boot.bin
+boot.bin: boot.asm kernel.bin
+	@KERNEL_BYTES=$$(wc -c < kernel.bin | tr -d '[:space:]'); \
+	KERNEL_SECTORS=$$((($$KERNEL_BYTES + 511) / 512)); \
+	if [ $$KERNEL_SECTORS -gt $(MAX_KERNEL_SECTORS) ]; then \
+		echo "kernel.bin too large for floppy boot: $$KERNEL_SECTORS sectors (max $(MAX_KERNEL_SECTORS))"; \
+		exit 1; \
+	fi; \
+	echo "Building bootloader with KERNEL_SECTORS=$$KERNEL_SECTORS"; \
+	$(ASM) -f bin boot.asm -o boot.bin -D KERNEL_SECTORS=$$KERNEL_SECTORS
 
 kernel_entry.o: kernel_entry.asm
 	$(ASM) -f elf32 kernel_entry.asm -o kernel_entry.o

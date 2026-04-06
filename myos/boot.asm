@@ -1,6 +1,10 @@
 [BITS 16]
 [ORG 0x7C00]
 
+%ifndef KERNEL_SECTORS
+%define KERNEL_SECTORS 512
+%endif
+
 start:
     cli
     xor ax, ax
@@ -28,9 +32,8 @@ load_kernel:
     mov ax, 0x1000
     mov es, ax
 
-    ; Load kernel sectors one-by-one so we can safely cross tracks.
-    ; Keep this above current kernel.bin growth to avoid partial loads.
-    mov si, 512         ; sectors to read
+    ; Load exactly the number of sectors produced by the build.
+    mov si, KERNEL_SECTORS ; sectors to read
     mov ch, 0           ; cylinder
     mov dh, 0           ; head
     mov cl, 2           ; sector (starts after boot sector)
