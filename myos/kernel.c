@@ -529,6 +529,7 @@ void kernel_main(void) {
         init_filesystem();
         fs_save();
     }
+    time_settings_load();
     // fsimage_to_globals resets current_user_idx, so set it again after fs_load/init
     current_user_idx = 0;
 

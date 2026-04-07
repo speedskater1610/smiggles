@@ -214,6 +214,9 @@ static void print_file_already_exists_message(int node_idx, char* video, int* cu
     print_string(message, -1, video, cursor, COLOR_LIGHT_RED);
 }
 
+static int shell_read_file_content(const char* path, char* out, int max_len);
+static int shell_write_file_content(const char* path, const char* data, int len, int append);
+
 // --- Time Functions ---
 unsigned char cmos_read(unsigned char reg) {
     unsigned char value;
@@ -226,23 +229,293 @@ unsigned char bcd_to_bin(unsigned char bcd) {
     return ((bcd >> 4) * 10) + (bcd & 0x0F);
 }
 
-void get_time_string(char* buf) {
+typedef struct {
+    const char* name;
+    int base_offset_minutes;
+    int observes_dst;
+    const char* standard_abbr;
+    const char* daylight_abbr;
+} TimeZoneRule;
+
+typedef struct {
+    int year;
+    int month;
+    int day;
+    int hour;
+    int minute;
+    int second;
+} TimeDate;
+
+static const char timezone_config_path[] = "/timezone";
+static const TimeZoneRule timezone_rules[] = {
+    {"UTC", 0, 0, "UTC", "UTC"},
+    {"GMT", 0, 0, "GMT", "GMT"},
+    {"ET", -300, 1, "EST", "EDT"},
+    {"CT", -360, 1, "CST", "CDT"},
+    {"MT", -420, 1, "MST", "MDT"},
+    {"PT", -480, 1, "PST", "PDT"},
+};
+
+static char current_timezone_name[8] = "UTC";
+
+static char tz_upper_char(char c) {
+    if (c >= 'a' && c <= 'z') return (char)(c - ('a' - 'A'));
+    return c;
+}
+
+static void tz_normalize_name(const char* src, char* dst, int max_len) {
+    int di = 0;
+    if (!src || !dst || max_len <= 0) return;
+    while (src[di] && di < max_len - 1) {
+        dst[di] = tz_upper_char(src[di]);
+        di++;
+    }
+    dst[di] = 0;
+}
+
+static int time_find_timezone_rule(const char* tz_name) {
+    char normalized[8];
+    if (!tz_name || !tz_name[0]) return -1;
+    tz_normalize_name(tz_name, normalized, (int)sizeof(normalized));
+
+    if (mini_strcmp(normalized, "EST") == 0 || mini_strcmp(normalized, "EDT") == 0) str_copy(normalized, "ET", (int)sizeof(normalized));
+    if (mini_strcmp(normalized, "CST") == 0 || mini_strcmp(normalized, "CDT") == 0) str_copy(normalized, "CT", (int)sizeof(normalized));
+    if (mini_strcmp(normalized, "MST") == 0 || mini_strcmp(normalized, "MDT") == 0) str_copy(normalized, "MT", (int)sizeof(normalized));
+    if (mini_strcmp(normalized, "PST") == 0 || mini_strcmp(normalized, "PDT") == 0) str_copy(normalized, "PT", (int)sizeof(normalized));
+
+    for (int i = 0; i < (int)(sizeof(timezone_rules) / sizeof(timezone_rules[0])); i++) {
+        if (mini_strcmp(normalized, timezone_rules[i].name) == 0) return i;
+    }
+    return -1;
+}
+
+int time_set_timezone(const char* tz_name) {
+    int rule_index = time_find_timezone_rule(tz_name);
+    if (rule_index < 0) return 0;
+
+    str_copy(current_timezone_name, timezone_rules[rule_index].name, (int)sizeof(current_timezone_name));
+    return 1;
+}
+
+const char* time_get_timezone_name(void) {
+    return current_timezone_name;
+}
+
+static int time_is_leap_year(int year) {
+    if ((year % 400) == 0) return 1;
+    if ((year % 100) == 0) return 0;
+    return (year % 4) == 0;
+}
+
+static int time_days_in_month(int year, int month) {
+    static const int days_norm[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    if (month < 1 || month > 12) return 30;
+    if (month == 2 && time_is_leap_year(year)) return 29;
+    return days_norm[month - 1];
+}
+
+static int time_weekday_0_sun(int year, int month, int day) {
+    static const int table[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
+    if (month < 3) year -= 1;
+    return (year + year/4 - year/100 + year/400 + table[month - 1] + day) % 7;
+}
+
+static int time_nth_weekday_of_month(int year, int month, int weekday, int nth) {
+    int first_wday = time_weekday_0_sun(year, month, 1);
+    int first_match = 1 + ((7 + weekday - first_wday) % 7);
+    return first_match + (nth - 1) * 7;
+}
+
+static void time_add_days(TimeDate* dt, int delta_days) {
+    if (!dt) return;
+    while (delta_days > 0) {
+        int dim = time_days_in_month(dt->year, dt->month);
+        dt->day++;
+        if (dt->day > dim) {
+            dt->day = 1;
+            dt->month++;
+            if (dt->month > 12) {
+                dt->month = 1;
+                dt->year++;
+            }
+        }
+        delta_days--;
+    }
+    while (delta_days < 0) {
+        dt->day--;
+        if (dt->day < 1) {
+            dt->month--;
+            if (dt->month < 1) {
+                dt->month = 12;
+                dt->year--;
+            }
+            dt->day = time_days_in_month(dt->year, dt->month);
+        }
+        delta_days++;
+    }
+}
+
+static void time_add_minutes(TimeDate* dt, int delta_minutes) {
+    int total_minutes;
+    int day_delta = 0;
+    if (!dt) return;
+
+    total_minutes = dt->hour * 60 + dt->minute + delta_minutes;
+    while (total_minutes < 0) {
+        total_minutes += 24 * 60;
+        day_delta--;
+    }
+    while (total_minutes >= 24 * 60) {
+        total_minutes -= 24 * 60;
+        day_delta++;
+    }
+
+    dt->hour = total_minutes / 60;
+    dt->minute = total_minutes % 60;
+    time_add_days(dt, day_delta);
+}
+
+static void time_read_cmos_datetime(TimeDate* out_dt) {
+    unsigned char year = cmos_read(0x09);
+    unsigned char month = cmos_read(0x08);
+    unsigned char day = cmos_read(0x07);
     unsigned char hour = cmos_read(0x04);
-    unsigned char min  = cmos_read(0x02);
-    unsigned char sec  = cmos_read(0x00);
-    //convert from bcd
-    hour = bcd_to_bin(hour);
-    min  = bcd_to_bin(min);
-    sec  = bcd_to_bin(sec);
-    buf[0] = '0' + (hour / 10);
-    buf[1] = '0' + (hour % 10);
+    unsigned char min = cmos_read(0x02);
+    unsigned char sec = cmos_read(0x00);
+
+    if (!out_dt) return;
+
+    out_dt->year = 2000 + (int)bcd_to_bin(year);
+    out_dt->month = (int)bcd_to_bin(month);
+    out_dt->day = (int)bcd_to_bin(day);
+    out_dt->hour = (int)bcd_to_bin(hour);
+    out_dt->minute = (int)bcd_to_bin(min);
+    out_dt->second = (int)bcd_to_bin(sec);
+}
+
+static int time_is_us_dst_active(const TimeDate* local_standard) {
+    int start_day;
+    int end_day;
+
+    if (!local_standard) return 0;
+    if (local_standard->month < 3 || local_standard->month > 11) return 0;
+    if (local_standard->month > 3 && local_standard->month < 11) return 1;
+
+    if (local_standard->month == 3) {
+        start_day = time_nth_weekday_of_month(local_standard->year, 3, 0, 2); // second Sunday
+        if (local_standard->day > start_day) return 1;
+        if (local_standard->day < start_day) return 0;
+        return local_standard->hour >= 2;
+    }
+
+    end_day = time_nth_weekday_of_month(local_standard->year, 11, 0, 1); // first Sunday
+    if (local_standard->day < end_day) return 1;
+    if (local_standard->day > end_day) return 0;
+    return local_standard->hour < 2;
+}
+
+static int time_is_current_zone_dst(void) {
+    int rule_index = time_find_timezone_rule(current_timezone_name);
+    TimeDate dt;
+
+    if (rule_index < 0) return 0;
+    if (!timezone_rules[rule_index].observes_dst) return 0;
+
+    time_read_cmos_datetime(&dt);
+    time_add_minutes(&dt, timezone_rules[rule_index].base_offset_minutes);
+    return time_is_us_dst_active(&dt);
+}
+
+static const char* time_get_display_timezone_abbr(void) {
+    int rule_index = time_find_timezone_rule(current_timezone_name);
+    if (rule_index < 0) return "UTC";
+    if (!timezone_rules[rule_index].observes_dst) return timezone_rules[rule_index].standard_abbr;
+    return time_is_current_zone_dst() ? timezone_rules[rule_index].daylight_abbr : timezone_rules[rule_index].standard_abbr;
+}
+
+static int time_get_timezone_offset_minutes(void) {
+    int rule_index = time_find_timezone_rule(current_timezone_name);
+    if (rule_index < 0) return 0;
+    if (timezone_rules[rule_index].observes_dst && time_is_current_zone_dst()) {
+        return timezone_rules[rule_index].base_offset_minutes + 60;
+    }
+    return timezone_rules[rule_index].base_offset_minutes;
+}
+
+static void time_seconds_to_hms(int seconds_since_midnight, char* buf) {
+    int hour24 = 0;
+    int hour12 = 0;
+    int min = 0;
+    int sec = 0;
+    const char* meridiem = "AM";
+
+    while (seconds_since_midnight < 0) seconds_since_midnight += 24 * 60 * 60;
+    while (seconds_since_midnight >= 24 * 60 * 60) seconds_since_midnight -= 24 * 60 * 60;
+
+    hour24 = seconds_since_midnight / 3600;
+    seconds_since_midnight %= 3600;
+    min = seconds_since_midnight / 60;
+    sec = seconds_since_midnight % 60;
+
+    if (hour24 >= 12) meridiem = "PM";
+    hour12 = hour24 % 12;
+    if (hour12 == 0) hour12 = 12;
+
+    buf[0] = '0' + (hour12 / 10);
+    buf[1] = '0' + (hour12 % 10);
     buf[2] = ':';
     buf[3] = '0' + (min / 10);
     buf[4] = '0' + (min % 10);
     buf[5] = ':';
     buf[6] = '0' + (sec / 10);
     buf[7] = '0' + (sec % 10);
-    buf[8] = 0;
+    buf[8] = ' ';
+    buf[9] = meridiem[0];
+    buf[10] = meridiem[1];
+    buf[11] = 0;
+}
+
+void get_time_string(char* buf) {
+    TimeDate dt;
+    int local_seconds;
+    int adjusted_seconds;
+
+    time_read_cmos_datetime(&dt);
+    local_seconds = dt.hour * 3600 + dt.minute * 60 + dt.second;
+    adjusted_seconds = local_seconds + (time_get_timezone_offset_minutes() * 60);
+    time_seconds_to_hms(adjusted_seconds, buf);
+}
+
+void time_settings_save(void) {
+    char value[32];
+
+    value[0] = 0;
+    str_concat(value, current_timezone_name);
+
+    shell_write_file_content(timezone_config_path, value, str_len(value), 0);
+}
+
+void time_settings_load(void) {
+    char config[32];
+    int len = shell_read_file_content(timezone_config_path, config, (int)sizeof(config));
+
+    if (len > 0) {
+        char name[8];
+        int i = 0;
+        int n = 0;
+
+        while (config[i] == ' ') i++;
+        while (config[i] && config[i] != ' ' && n < (int)sizeof(name) - 1) {
+            name[n++] = config[i++];
+        }
+        name[n] = 0;
+        while (config[i] == ' ') i++;
+        if (time_set_timezone(name)) {
+            return;
+        }
+    }
+
+    time_set_timezone("UTC");
 }
 
 // --- History Functions ---
@@ -636,10 +909,106 @@ static void handle_rm_command(const char* filename, char* video, int* cursor, un
 }
 
 static void handle_time_command(char* video, int* cursor, unsigned char color) {
-    char timebuf[9];
+    char timebuf[12];
     get_time_string(timebuf);
-    print_string(timebuf, 8, video, cursor, color);
-    print_string_sameline(" UTC", 4, video, cursor, color);
+    print_string(timebuf, -1, video, cursor, color);
+    print_string_sameline(" ", 1, video, cursor, color);
+    print_string_sameline(time_get_display_timezone_abbr(), -1, video, cursor, color);
+}
+
+static void handle_timezone_command(const char* args, char* video, int* cursor) {
+    char tz_name[8];
+    char subcmd[16];
+    int i = 0;
+    int n = 0;
+
+    while (args[i] == ' ') i++;
+    while (args[i] && args[i] != ' ' && n < (int)sizeof(tz_name) - 1) {
+        tz_name[n++] = args[i++];
+    }
+    tz_name[n] = 0;
+    tz_normalize_name(tz_name, tz_name, (int)sizeof(tz_name));
+
+    if (tz_name[0] == 0) {
+        char buf[64];
+        int offset_minutes = time_get_timezone_offset_minutes();
+        buf[0] = 0;
+        str_concat(buf, "TZ: ");
+        str_concat(buf, time_get_timezone_name());
+        str_concat(buf, " (");
+        int_to_str(offset_minutes, buf + str_len(buf));
+        str_concat(buf, " min)");
+        print_string(buf, -1, video, cursor, COLOR_LIGHT_CYAN);
+        return;
+    }
+
+    if (mini_strcmp(tz_name, "SHOW") == 0) {
+        while (args[i] == ' ') i++;
+        n = 0;
+        while (args[i] && args[i] != ' ' && n < (int)sizeof(subcmd) - 1) {
+            subcmd[n++] = args[i++];
+        }
+        subcmd[n] = 0;
+        tz_normalize_name(subcmd, subcmd, (int)sizeof(subcmd));
+
+        if (subcmd[0] == 0) {
+            char buf[64];
+            int offset_minutes = time_get_timezone_offset_minutes();
+            buf[0] = 0;
+            str_concat(buf, "TZ: ");
+            str_concat(buf, time_get_timezone_name());
+            str_concat(buf, " (");
+            int_to_str(offset_minutes, buf + str_len(buf));
+            str_concat(buf, " min)");
+            print_string(buf, -1, video, cursor, COLOR_LIGHT_CYAN);
+            return;
+        }
+
+        if (mini_strcmp(subcmd, "TIMEZONES") == 0 || mini_strcmp(subcmd, "ZONES") == 0) {
+            print_string("Available zones:", -1, video, cursor, COLOR_LIGHT_CYAN);
+            print_string("  UTC", -1, video, cursor, COLOR_LIGHT_GREEN);
+            print_string("  GMT", -1, video, cursor, COLOR_LIGHT_GREEN);
+            print_string("  ET (auto EST/EDT)", -1, video, cursor, COLOR_LIGHT_GREEN);
+            print_string("  CT (auto CST/CDT)", -1, video, cursor, COLOR_LIGHT_GREEN);
+            print_string("  MT (auto MST/MDT)", -1, video, cursor, COLOR_LIGHT_GREEN);
+            print_string("  PT (auto PST/PDT)", -1, video, cursor, COLOR_LIGHT_GREEN);
+            print_string("Aliases accepted: EST, EDT, CST, CDT, MST, MDT, PST, PDT", -1, video, cursor, COLOR_YELLOW);
+            return;
+        }
+
+        print_string("Usage: tz show [timezones]", -1, video, cursor, COLOR_YELLOW);
+        return;
+    }
+
+    if (mini_strcmp(tz_name, "SET") == 0) {
+        while (args[i] == ' ') i++;
+        n = 0;
+        while (args[i] && args[i] != ' ' && n < (int)sizeof(tz_name) - 1) {
+            tz_name[n++] = args[i++];
+        }
+        tz_name[n] = 0;
+        tz_normalize_name(tz_name, tz_name, (int)sizeof(tz_name));
+        if (tz_name[0] == 0) {
+            print_string("Usage: tz set <UTC|GMT|ET|CT|MT|PT>", -1, video, cursor, COLOR_YELLOW);
+            return;
+        }
+        if (!time_set_timezone(tz_name)) {
+            print_string("Unknown timezone", -1, video, cursor, COLOR_LIGHT_RED);
+            return;
+        }
+        time_settings_save();
+        print_string("Timezone updated", -1, video, cursor, COLOR_LIGHT_GREEN);
+        return;
+    }
+
+    // Allow shorthand: tz EST
+    if (time_set_timezone(tz_name)) {
+        time_settings_save();
+        print_string("Timezone updated", -1, video, cursor, COLOR_LIGHT_GREEN);
+        return;
+    }
+
+    print_string("Usage: tz [show|show timezones|set <zone>]", -1, video, cursor, COLOR_YELLOW);
 }
 
 void handle_clear_command(char* video, int* cursor) {
@@ -4338,6 +4707,12 @@ static void dispatch_command_internal(const char* cmd, char* video, int* cursor)
             "log clear - clears the log entries\n"
             "log test - create a test log entry\n",
             -1, video, cursor, COLOR_LIGHT_BLUE);
+        print_string(
+            "---Timezones Commands---\n"
+            "tz | tz show - shows current timezone\n"
+            "tz show timezone - shows a list of all the timezones\n"
+            "tz set <timezone> - sets the timezone\n",
+            -1,video,cursor,COLOR_LIGHT_RED);
     
 
 
@@ -4368,6 +4743,10 @@ static void dispatch_command_internal(const char* cmd, char* video, int* cursor)
         handle_lsall_command(video, cursor);
     } else if (mini_strcmp(cmd, "time") == 0) {
         handle_time_command(video, cursor, 0x0A);
+    } else if (mini_strcmp(cmd, "tz") == 0) {
+        handle_timezone_command("", video, cursor);
+    } else if (cmd[0] == 't' && cmd[1] == 'z' && cmd[2] == ' ') {
+        handle_timezone_command(cmd + 2, video, cursor);
     } else if (mini_strcmp(cmd, "clear") == 0 || mini_strcmp(cmd, "cls") == 0) {
         handle_clear_command(video, cursor);
     } else if (mini_strcmp(cmd, "neofetch") == 0) {

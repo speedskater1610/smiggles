@@ -465,6 +465,10 @@ void handle_tab_completion(char* cmd_buf, int* cmd_len, int* cmd_cursor, char* v
 unsigned char cmos_read(unsigned char reg);
 unsigned char bcd_to_bin(unsigned char bcd);
 void get_time_string(char* buf);
+void time_settings_load(void);
+void time_settings_save(void);
+int time_set_timezone(const char* tz_name);
+const char* time_get_timezone_name(void);
 
 // Disk I/O for persistent storage
 int disk_read_sector(unsigned int lba, void* buffer);
