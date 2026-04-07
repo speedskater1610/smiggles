@@ -49,6 +49,8 @@ int history_count = 0;
 static int udpecho_fd = -1;
 static uint16_t udpecho_port = 0;
 static int logger_ready = 0;
+static const char* shell_stdin_data = 0;
+static int shell_stdin_len = 0;
 
 static void ensure_logger_ready(void) {
     if (!logger_ready) {
@@ -269,6 +271,76 @@ void add_to_history(const char* cmd) {
     }
 }
 
+static int shell_is_space(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+static void shell_trim_copy(char* dst, const char* src, int max_len) {
+    int start = 0;
+    int end = str_len(src);
+    int di = 0;
+
+    while (src[start] && shell_is_space(src[start])) start++;
+    while (end > start && shell_is_space(src[end - 1])) end--;
+
+    for (int i = start; i < end && di < max_len - 1; i++) {
+        dst[di++] = src[i];
+    }
+    dst[di] = 0;
+}
+
+static int shell_find_unquoted(const char* s, char needle) {
+    int in_quote = 0;
+    for (int i = 0; s[i]; i++) {
+        if (s[i] == '"') in_quote = !in_quote;
+        if (!in_quote && s[i] == needle) return i;
+    }
+    return -1;
+}
+
+static int shell_read_file_content(const char* path, char* out, int max_len) {
+    int idx;
+    int copy_len;
+
+    if (!path || !out || max_len <= 0) return -1;
+
+    idx = resolve_path(path);
+    if (idx < 0 || !node_table[idx].used || node_table[idx].type != NODE_FILE) return -1;
+
+    copy_len = node_table[idx].content_size;
+    if (copy_len < 0) copy_len = 0;
+    if (copy_len > max_len - 1) copy_len = max_len - 1;
+
+    for (int i = 0; i < copy_len; i++) {
+        out[i] = node_table[idx].content[i];
+    }
+    out[copy_len] = 0;
+    return copy_len;
+}
+
+static int shell_write_file_content(const char* path, const char* data, int len, int append) {
+    int flags = FS_O_WRITE | FS_O_CREATE;
+    int fd;
+
+    if (!path || !data || len < 0) return -1;
+    flags |= append ? FS_O_APPEND : FS_O_TRUNC;
+
+    fd = fs_fd_open(path, flags);
+    if (fd < 0) return -1;
+
+    if (len > 0 && fs_fd_write(fd, data, len) != len) {
+        fs_fd_close(fd);
+        return -1;
+    }
+
+    fs_fd_close(fd);
+    return 0;
+}
+
+static int shell_starts_with_echo(const char* cmd) {
+    return cmd[0] == 'e' && cmd[1] == 'c' && cmd[2] == 'h' && cmd[3] == 'o' && cmd[4] == ' ';
+}
+
 
 // --- Neofetch ---
 // --- Neofetch Command ---
@@ -457,6 +529,11 @@ static void handle_lsall_command(char* video, int* cursor) {
 }
 
 static void handle_cat_command(const char* filename, char* video, int* cursor, unsigned char color_unused) {
+    if ((!filename || filename[0] == 0) && shell_stdin_data) {
+        print_string(shell_stdin_data, shell_stdin_len, video, cursor, COLOR_LIGHT_CYAN);
+        return;
+    }
+
     int node_idx = resolve_path(filename);
     if (node_idx == -1) {
         print_string("File not found", 14, video, cursor, COLOR_LIGHT_RED);
@@ -2228,21 +2305,31 @@ static void handle_grep_command(const char* args, char* video, int* cursor) {
     }
     filename[j] = 0;
     
-    if (pattern[0] == 0 || filename[0] == 0) {
+    if (pattern[0] == 0) {
         print_string("Usage: grep pattern filename", 28, video, cursor, 0xC);
         return;
     }
-    
-    // Find the file
-    int file_idx = resolve_path(filename);
-    if (file_idx == -1 || node_table[file_idx].type != NODE_FILE) {
-        print_string("File not found", 14, video, cursor, 0xC);
-        return;
+
+    // Search either file content or piped stdin content.
+    char* content = 0;
+    int content_size = 0;
+    if (filename[0] == 0) {
+        if (!shell_stdin_data) {
+            print_string("Usage: grep pattern filename", 28, video, cursor, 0xC);
+            return;
+        }
+        content = (char*)shell_stdin_data;
+        content_size = shell_stdin_len;
+    } else {
+        int file_idx = resolve_path(filename);
+        if (file_idx == -1 || node_table[file_idx].type != NODE_FILE) {
+            print_string("File not found", 14, video, cursor, 0xC);
+            return;
+        }
+        content = node_table[file_idx].content;
+        content_size = node_table[file_idx].content_size;
     }
-    
-    // Search through file content line by line
-    char* content = node_table[file_idx].content;
-    int content_size = node_table[file_idx].content_size;
+
     char line[MAX_FILE_CONTENT];
     int line_pos = 0;
     int match_found = 0;
@@ -2312,8 +2399,142 @@ static void handle_cp_command(const char* args, char* video, int* cursor) {
     }
 }
 
+static void dispatch_command_internal(const char* cmd, char* video, int* cursor);
+
 // --- Main Command Dispatcher ---
 void dispatch_command(const char* cmd, char* video, int* cursor) {
+    char left_cmd[MAX_CMD_BUFFER];
+    char right_cmd[MAX_CMD_BUFFER];
+    char base_cmd[MAX_CMD_BUFFER];
+    char out_path[MAX_PATH_LENGTH];
+    char in_path[MAX_PATH_LENGTH];
+    char captured[4096];
+    char stdin_buffer[MAX_FILE_CONTENT + 1];
+    int pipe_pos;
+    int out_pos = -1;
+    int in_pos = -1;
+    int append_mode = 0;
+    int has_out = 0;
+    int has_in = 0;
+
+    if (!cmd) return;
+
+    pipe_pos = shell_find_unquoted(cmd, '|');
+    if (pipe_pos >= 0) {
+        const char* prev_stdin = shell_stdin_data;
+        int prev_stdin_len = shell_stdin_len;
+        int i = 0;
+        int right_index = pipe_pos + 1;
+        int captured_len;
+
+        while (i < pipe_pos && i < MAX_CMD_BUFFER - 1) {
+            left_cmd[i] = cmd[i];
+            i++;
+        }
+        left_cmd[i] = 0;
+        shell_trim_copy(base_cmd, left_cmd, MAX_CMD_BUFFER);
+        shell_trim_copy(right_cmd, cmd + right_index, MAX_CMD_BUFFER);
+
+        if (base_cmd[0] == 0 || right_cmd[0] == 0) {
+            print_string("Invalid pipe syntax", -1, video, cursor, COLOR_LIGHT_RED);
+            return;
+        }
+
+        display_begin_capture(captured, (int)sizeof(captured), 1);
+        dispatch_command(base_cmd, video, cursor);
+        captured_len = display_end_capture();
+
+        shell_stdin_data = captured;
+        shell_stdin_len = captured_len;
+        dispatch_command(right_cmd, video, cursor);
+        shell_stdin_data = prev_stdin;
+        shell_stdin_len = prev_stdin_len;
+        return;
+    }
+
+    if (!shell_starts_with_echo(cmd)) {
+        out_pos = shell_find_unquoted(cmd, '>');
+        if (out_pos >= 0) {
+            int op_len = 1;
+            int i = 0;
+            if (cmd[out_pos + 1] == '>') {
+                append_mode = 1;
+                op_len = 2;
+            }
+
+            while (i < out_pos && i < MAX_CMD_BUFFER - 1) {
+                base_cmd[i] = cmd[i];
+                i++;
+            }
+            base_cmd[i] = 0;
+            shell_trim_copy(base_cmd, base_cmd, MAX_CMD_BUFFER);
+            shell_trim_copy(out_path, cmd + out_pos + op_len, MAX_PATH_LENGTH);
+
+            if (base_cmd[0] == 0 || out_path[0] == 0) {
+                print_string("Invalid redirection syntax", -1, video, cursor, COLOR_LIGHT_RED);
+                return;
+            }
+
+            has_out = 1;
+            cmd = base_cmd;
+        }
+
+        in_pos = shell_find_unquoted(cmd, '<');
+        if (in_pos >= 0) {
+            int i = 0;
+            while (i < in_pos && i < MAX_CMD_BUFFER - 1) {
+                base_cmd[i] = cmd[i];
+                i++;
+            }
+            base_cmd[i] = 0;
+            shell_trim_copy(base_cmd, base_cmd, MAX_CMD_BUFFER);
+            shell_trim_copy(in_path, cmd + in_pos + 1, MAX_PATH_LENGTH);
+
+            if (base_cmd[0] == 0 || in_path[0] == 0) {
+                print_string("Invalid redirection syntax", -1, video, cursor, COLOR_LIGHT_RED);
+                return;
+            }
+
+            has_in = 1;
+            cmd = base_cmd;
+        }
+    }
+
+    if (has_out || has_in) {
+        const char* prev_stdin = shell_stdin_data;
+        int prev_stdin_len = shell_stdin_len;
+        int captured_len = 0;
+
+        if (has_in) {
+            int read_len = shell_read_file_content(in_path, stdin_buffer, (int)sizeof(stdin_buffer));
+            if (read_len < 0) {
+                print_string("Input redirection file not found", -1, video, cursor, COLOR_LIGHT_RED);
+                return;
+            }
+            shell_stdin_data = stdin_buffer;
+            shell_stdin_len = read_len;
+        }
+
+        if (has_out) {
+            display_begin_capture(captured, (int)sizeof(captured), 1);
+            dispatch_command_internal(cmd, video, cursor);
+            captured_len = display_end_capture();
+            if (shell_write_file_content(out_path, captured, captured_len, append_mode) < 0) {
+                print_string("Output redirection failed", -1, video, cursor, COLOR_LIGHT_RED);
+            }
+        } else {
+            dispatch_command_internal(cmd, video, cursor);
+        }
+
+        shell_stdin_data = prev_stdin;
+        shell_stdin_len = prev_stdin_len;
+        return;
+    }
+
+    dispatch_command_internal(cmd, video, cursor);
+}
+
+static void dispatch_command_internal(const char* cmd, char* video, int* cursor) {
                 ensure_logger_ready();
                 if (cmd && cmd[0]) {
                     char log_line[LOGGER_MESSAGE_MAX];

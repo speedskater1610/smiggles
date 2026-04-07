@@ -14,6 +14,10 @@ static int scrollback_start = 0;
 static int scrollback_count = 0;
 static int scrollback_offset = 0;
 static char live_screen_snapshot[SCREEN_BYTES];
+static char* capture_buffer = 0;
+static int capture_max_len = 0;
+static int capture_len = 0;
+static int capture_suppress_screen = 0;
 
 static int mouse_col = 40;
 static int mouse_row = 12;
@@ -21,6 +25,36 @@ static int mouse_visible = 0;
 static int mouse_saved_offset = -1;
 static char mouse_saved_char = ' ';
 static unsigned char mouse_saved_attr = COLOR_LIGHT_GRAY;
+
+static void capture_append_char(char c) {
+    if (!capture_buffer || capture_max_len <= 0) return;
+    if (capture_len >= capture_max_len - 1) return;
+    capture_buffer[capture_len++] = c;
+    capture_buffer[capture_len] = 0;
+}
+
+static void capture_append_text(const char* str, int len, int prepend_newline) {
+    if (!capture_buffer || !str) return;
+
+    if (prepend_newline && capture_len > 0) {
+        capture_append_char('\n');
+    }
+
+    for (int i = 0; i < len; ) {
+        if (str[i] == '\\' && (i + 1 < len) && str[i + 1] == 'n') {
+            capture_append_char('\n');
+            i += 2;
+            continue;
+        }
+        if (str[i] == '\n' || str[i] == 10) {
+            capture_append_char('\n');
+            i++;
+            continue;
+        }
+        capture_append_char(str[i]);
+        i++;
+    }
+}
 
 static void copy_bytes(char* dst, const char* src, int count) {
     for (int i = 0; i < count; i++) {
@@ -166,6 +200,25 @@ void display_restore_live_screen(char* video) {
     restore_live_screen_bytes(video);
 }
 
+void display_begin_capture(char* buffer, int max_len, int suppress_screen) {
+    capture_buffer = buffer;
+    capture_max_len = max_len;
+    capture_len = 0;
+    capture_suppress_screen = suppress_screen;
+    if (capture_buffer && capture_max_len > 0) {
+        capture_buffer[0] = 0;
+    }
+}
+
+int display_end_capture(void) {
+    int out_len = capture_len;
+    capture_buffer = 0;
+    capture_max_len = 0;
+    capture_len = 0;
+    capture_suppress_screen = 0;
+    return out_len;
+}
+
 void scroll_screen(char* video) {
     clear_mouse_overlay(video);
     append_scrollback_row(video);
@@ -206,16 +259,24 @@ void print_smiggles_art(char* video, int* cursor) {
 
 //print a string on NEW LINE with color
 void print_string(const char* str, int len, char* video, int* cursor, unsigned char color) {
+    int computed_len = len;
+    if (computed_len < 0) {
+        computed_len = 0;
+        while (str[computed_len]) computed_len++;
+    }
+
+    if (capture_buffer) {
+        capture_append_text(str, computed_len, 1);
+        if (capture_suppress_screen) return;
+    }
+
     *cursor = ((*cursor / 80) + 1) * 80; //this is what goes to the new line
     while (*cursor >= 80*25) {
         scroll_screen(video);
         *cursor -= 80;
     }
     // If len < 0, auto-calculate string length
-    if (len < 0) {
-        len = 0;
-        while (str[len]) len++;
-    }
+    len = computed_len;
     for (int i = 0; i < len; ) {
         // Handle "\\n" (two-character sequence)
         if (str[i] == '\\' && (i+1 < len) && str[i+1] == 'n') {
@@ -250,11 +311,19 @@ void print_string(const char* str, int len, char* video, int* cursor, unsigned c
 
 //print string on SAME LINE with color
 void print_string_sameline(const char* str, int len, char* video, int* cursor, unsigned char color) {
-    // If len < 0, auto-calculate string length
-    if (len < 0) {
-        len = 0;
-        while (str[len]) len++;
+    int computed_len = len;
+    if (computed_len < 0) {
+        computed_len = 0;
+        while (str[computed_len]) computed_len++;
     }
+
+    if (capture_buffer) {
+        capture_append_text(str, computed_len, 0);
+        if (capture_suppress_screen) return;
+    }
+
+    // If len < 0, auto-calculate string length
+    len = computed_len;
     for (int i = 0; i < len; ) {
         // Handle "\\n" (two-character sequence)
         if (str[i] == '\\' && (i+1 < len) && str[i+1] == 'n') {

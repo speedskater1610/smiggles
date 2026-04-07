@@ -440,6 +440,8 @@ int display_scroll_view(int delta, char* video);
 int display_is_scrollback_active(void);
 void display_sync_live_screen(char* video);
 void display_restore_live_screen(char* video);
+void display_begin_capture(char* buffer, int max_len, int suppress_screen);
+int display_end_capture(void);
 
 // Editor
 void nano_editor(const char* filename, char* video, int* cursor);
