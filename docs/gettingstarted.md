@@ -43,6 +43,9 @@ Install GNU Make
 ```qemu-system-i386 --version```
 ```make --version```
 
+<img width="976" height="570" alt="image" src="https://github.com/user-attachments/assets/8799101e-5eaf-4e16-a572-3de059a81a4c" />
+
+
 ### Linux (Ubuntu/Debian) steps
 
 1) Update package lists with ```sudo apt-get update```
@@ -53,7 +56,7 @@ Install GNU Make
 ```qemu-system-i386 --version```
 ```make --version```
 
-**I have tested this installation sequence on Windows but I can't verify if it works on Mac or Linux. I think it should work but I'm not sure.**
+**I have tested this installation sequence on Windows and Mac but I can't verify if it works on Linux. I think it should work but I'm not sure.**
 
 Instructions for running smiggles are in [buildandrun.md](buildandrun.md).
 
