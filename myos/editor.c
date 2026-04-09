@@ -158,6 +158,32 @@ static void render_editor_view(const char* buf, int len, char* video, int edit_s
     }
 }
 
+static void editor_sync_cursor_and_view(const char* buf, int len, char* video, int edit_start, int* view_top_row, int* cursor_index, int* cursor) {
+    int cur_row = 0;
+    int cur_col = 0;
+    int screen_row = 0;
+
+    if (!view_top_row || !cursor_index || !cursor) return;
+
+    logical_pos_for_index(buf, *cursor_index, &cur_row, &cur_col);
+
+    if (cur_row < *view_top_row) {
+        *view_top_row = cur_row;
+    } else if (cur_row >= *view_top_row + EDIT_ROWS) {
+        *view_top_row = cur_row - EDIT_ROWS + 1;
+    }
+
+    render_editor_view(buf, len, video, edit_start, *view_top_row);
+
+    screen_row = cur_row - *view_top_row;
+    if (screen_row < 0) screen_row = 0;
+    if (screen_row >= EDIT_ROWS) screen_row = EDIT_ROWS - 1;
+
+    *cursor = edit_start + screen_row * EDIT_COLS + cur_col;
+    if (*cursor >= 80 * 25) *cursor = 80 * 25 - 1;
+    set_cursor_position(*cursor);
+}
+
 // --- Global Variables ---
 // file_table and file_count removed; use node_table only
 
@@ -206,7 +232,7 @@ void nano_editor(const char* filename, char* video, int* cursor) {
     }
     int header_cursor = 0;
     print_string("--- Smiggles Editor ---", -1, video, &header_cursor, COLOR_BROWN);
-    print_string("Ctrl+S: Save | Ctrl+Q: Quit | Ctrl+C: Line | Ctrl+W: Word | Ctrl+V: Paste", -1, video, &header_cursor, COLOR_LIGHT_GRAY);
+    print_string("Ctrl+S: Save | Ctrl+Q: Quit", -1, video, &header_cursor, COLOR_LIGHT_GRAY);
     int edit_start = 240;
     int logical_row = 0, logical_col = 0;
     int draw_cursor = edit_start;
@@ -327,6 +353,8 @@ void nano_editor(const char* filename, char* video, int* cursor) {
         }
         if (ctrl && scancode == 0x2F) { // Ctrl+V: paste clipboard
             editor_paste_clipboard(buf, &len, &cursor_index, maxlen);
+
+            editor_sync_cursor_and_view(buf, len, video, edit_start, &view_top_row, &cursor_index, cursor);
             continue;
         }
         if (ctrl && scancode == 0x1F) { // Ctrl+S: Save

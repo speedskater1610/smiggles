@@ -130,28 +130,6 @@ static int fs_write_slot_header(int slot, const FSSlotHeader* header) {
     return disk_write_sector(fs_slot_base_sector(slot), sector_buf) == 0;
 }
 
-static int fs_load_legacy_single_image(void) {
-    unsigned char sector_buf[512];
-    unsigned char* img_ptr = (unsigned char*)&fs_image;
-    int ok = 1;
-    for (int i = 0; i < FS_SLOT_DATA_SECTORS; i++) {
-        if (disk_read_sector(FS_DISK_SECTOR + i, sector_buf) != 0) {
-            ok = 0;
-            break;
-        }
-        int offset = i * 512;
-        int to_copy = sizeof(fs_image) - offset;
-        if (to_copy <= 0) break;
-        if (to_copy > 512) to_copy = 512;
-        my_memcpy(img_ptr + offset, sector_buf, to_copy);
-    }
-    if (!ok) return 0;
-    if (fs_image.magic != FS_IMAGE_MAGIC || fs_image.version != FS_IMAGE_VERSION) return 0;
-    fsimage_to_globals();
-    fs_active_generation = 0;
-    return 1;
-}
-
 // NOTE: To check persistent image size, print sizeof(struct FSImage) in a test program or with a build-time assert in a C file where both struct FSImage and FS_SECTOR_COUNT are visible.
 
 // Update global variables from fs_image
@@ -430,7 +408,6 @@ void get_full_path(int node_idx, char* path, int max_len) {
     }
     
     // Build path recursively
-    char temp[MAX_PATH_LENGTH];
     int parts[32];
     int part_count = 0;
     int current = node_idx;
@@ -817,10 +794,6 @@ void fs_load() {
         fs_try_load_slot(best_slot, &best_generation);
         fsimage_to_globals();
         fs_active_generation = best_generation;
-        return;
-    }
-    if (fs_load_legacy_single_image()) {
-        fs_save();
         return;
     }
     fs_active_generation = 0;

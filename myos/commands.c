@@ -196,17 +196,9 @@ void handle_login_command(char* video, int* cursor) {
 
 static void print_file_already_exists_message(int node_idx, char* video, int* cursor) {
     char full_path[MAX_PATH_LENGTH];
-    char location[MAX_PATH_LENGTH];
     char message[160];
 
     get_full_path(node_idx, full_path, MAX_PATH_LENGTH);
-
-    int src = (full_path[0] == '/') ? 1 : 0;
-    int dst = 0;
-    while (full_path[src] && dst < MAX_PATH_LENGTH - 1) {
-        location[dst++] = full_path[src++];
-    }
-    location[dst] = 0;
 
     message[0] = 0;
     str_concat(message, "File already exists");
@@ -759,6 +751,7 @@ static void handle_command(const char* cmd, char* video, int* cursor, const char
 }
 
 static void handle_ls_command(char* video, int* cursor, unsigned char color_unused) {
+    (void)color_unused;
     FSNode* dir = &node_table[current_dir_idx];
     if (dir->child_count == 0) {
         print_string("(empty)", 7, video, cursor, COLOR_LIGHT_CYAN);
@@ -802,6 +795,7 @@ static void handle_lsall_command(char* video, int* cursor) {
 }
 
 static void handle_cat_command(const char* filename, char* video, int* cursor, unsigned char color_unused) {
+    (void)color_unused;
     if ((!filename || filename[0] == 0) && shell_stdin_data) {
         print_string(shell_stdin_data, shell_stdin_len, video, cursor, COLOR_LIGHT_CYAN);
         return;
@@ -846,6 +840,7 @@ static void handle_cat_command(const char* filename, char* video, int* cursor, u
 }
 
 static void handle_echo_command(const char* text, const char* filename, char* video, int* cursor, unsigned char color_unused) {
+    (void)color_unused;
     int node_idx = resolve_path(filename);
     if (node_idx != -1) {
         if (node_table[node_idx].type == NODE_FILE) {
@@ -873,6 +868,7 @@ static void handle_echo_command(const char* text, const char* filename, char* vi
 }
 
 static void handle_rm_command(const char* filename, char* video, int* cursor, unsigned char color_unused) {
+    (void)color_unused;
     int idx = resolve_path(filename);
     if (idx == -1 || !node_table[idx].used) {
         print_string("File not found or cannot remove root", 37, video, cursor, COLOR_LIGHT_RED);
@@ -1054,6 +1050,7 @@ static void handle_mv_command(const char* oldname, const char* newname, char* vi
 }
 
 static void handle_mkdir_command(const char* dirname, char* video, int* cursor, unsigned char color_unused) {
+    (void)color_unused;
     int result = fs_mkdir(dirname);
     if (result == -1) {
         print_string("Parent directory not found", 26, video, cursor, COLOR_LIGHT_RED);
@@ -1067,6 +1064,7 @@ static void handle_mkdir_command(const char* dirname, char* video, int* cursor, 
 }
 
 static void handle_cd_command(const char* dirname, char* video, int* cursor, unsigned char color_unused) {
+    (void)color_unused;
     if (str_equal(dirname, "")) {
         current_dir_idx = 0; // cd to root
         print_string("Changed to /", 12, video, cursor, COLOR_LIGHT_GREEN);
@@ -3198,7 +3196,6 @@ static void dispatch_command_internal(const char* cmd, char* video, int* cursor)
     // --- Shell Script Detection and Loading ---
     // If the command is a filename ending with .sh and is a file, treat as script
     // --- Script Detection: check if first word ends with .sh ---
-    int cmdlen = str_len(cmd);
     char first_word[MAX_NAME_LENGTH];
     int fw_i = 0;
     while (cmd[fw_i] && cmd[fw_i] != ' ' && fw_i < MAX_NAME_LENGTH - 1) { first_word[fw_i] = cmd[fw_i]; fw_i++; }

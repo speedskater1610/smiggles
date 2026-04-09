@@ -28,6 +28,7 @@ static volatile unsigned char mouse_packet[4];
 #define MOUSE_Y_DIVISOR 20
 #define MOUSE_SCROLL_FREEZE_PACKETS 3
 #define MOUSE_MAX_STEP_PER_PACKET 2
+#define PS2_WAIT_TIMEOUT 5000
 
 static int clamp_step(int value, int min_value, int max_value) {
     if (value < min_value) return min_value;
@@ -89,14 +90,14 @@ static const char* exception_name(unsigned int vector) {
 }
 
 static int ps2_wait_write_ready(void) {
-    for (int i = 0; i < 100000; i++) {
+    for (int i = 0; i < PS2_WAIT_TIMEOUT; i++) {
         if ((inb(0x64) & 0x02) == 0) return 1;
     }
     return 0;
 }
 
 static int ps2_wait_read_ready(void) {
-    for (int i = 0; i < 100000; i++) {
+    for (int i = 0; i < PS2_WAIT_TIMEOUT; i++) {
         if (inb(0x64) & 0x01) return 1;
     }
     return 0;

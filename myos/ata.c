@@ -13,7 +13,7 @@
 #define ATA_STATUS_DF   0x20
 #define ATA_STATUS_BSY  0x80
 
-#define ATA_POLL_TIMEOUT 1000000
+#define ATA_POLL_TIMEOUT 100000
 
 static void io_wait() {
     for (volatile int i = 0; i < 1000; i++); // crude delay

@@ -278,8 +278,18 @@ int tab_match_count = 0;
 char tab_matches[32][32];
 // --- User Authentication ---
 User user_table[MAX_USERS] = {
-    {"admin", "admin", 1},
-    {"user", "password", 0}
+    {
+        .username = "admin",
+        .password_hash = {0},
+        .is_admin = 1,
+        .groups = GROUP_ADMIN | GROUP_USERS,
+    },
+    {
+        .username = "user",
+        .password_hash = {0},
+        .is_admin = 0,
+        .groups = GROUP_USERS,
+    }
 };
 int user_count = 2;
 
@@ -516,11 +526,12 @@ void shell_read_line(char* prompt, char* buf, int max_len, char* video, int* cur
     buf[len] = 0;
 }
 
-void kernel_main(void) {
+void kernel_main(unsigned int mb_magic, unsigned int mb_info_addr) {
         // Automatically log in as admin at boot
         current_user_idx = 0;
+    init_protection();
     // Initialize basic paging and frame allocator (virtual memory foundation)
-    init_paging();
+    init_paging(mb_magic, mb_info_addr);
     init_process_table();
 
     // Load filesystem image from disk and validate; if invalid, initialize a new one
@@ -551,10 +562,8 @@ void kernel_main(void) {
     idt_ptr.base = (unsigned int)&idt;
     load_idt(&idt_ptr);
     mouse_init();
-    asm volatile("sti");
     char* video = (char*)0xB8000;
     int cursor = 0;
-    int prompt_end = 0;
     int line_start = 0;
     unsigned char prev_scancode = 0;
     int e0_prefix_pending = 0;
@@ -579,7 +588,6 @@ void kernel_main(void) {
         cursor++;
         i++;
     }
-    prompt_end = cursor;
     line_start = cursor;
 
     
@@ -600,6 +608,7 @@ void kernel_main(void) {
     display_set_mouse_position(40, 12);
     display_sync_live_screen(video);
     display_refresh_mouse(video);
+    asm volatile("sti");
 
     // Continue with normal kernel loop
     while (1) {

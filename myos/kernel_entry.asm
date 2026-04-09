@@ -2,6 +2,23 @@
 [GLOBAL _start]
 [GLOBAL exception_stub_table]
 [EXTERN kernel_main]
+[EXTERN stack_top]
+
+section .multiboot
+align 8
+mb2_header_start:
+    dd 0xE85250D6                ; Multiboot2 magic
+    dd 0                         ; i386 architecture
+    dd mb2_header_end - mb2_header_start
+    dd -(0xE85250D6 + 0 + (mb2_header_end - mb2_header_start))
+
+    ; Required end tag.
+    dw 0
+    dw 0
+    dd 8
+mb2_header_end:
+
+section .text
 
 [GLOBAL irq0_timer_handler]
 [GLOBAL irq1_keyboard_handler]
@@ -55,8 +72,13 @@ isr%1:
 %endmacro
 
 _start:
-    mov esp, 0x90000
+    cli
+    mov esp, stack_top
+    ; Multiboot2 hands us EAX=magic and EBX=multiboot info pointer.
+    push ebx
+    push eax
     call kernel_main
+    add esp, 8
     cli
     hlt
 

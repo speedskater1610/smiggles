@@ -315,7 +315,7 @@ typedef struct {
 // --- Function Declarations ---
 
 // Memory management
-void init_paging(void);
+void init_paging(uint32_t mb_magic, uint32_t mb_info_addr);
 void* alloc_page(void);
 void free_page(void* addr);
 

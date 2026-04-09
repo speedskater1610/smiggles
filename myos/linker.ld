@@ -1,28 +1,32 @@
 ENTRY(_start)
 SECTIONS
 {
-    /* Kernel code starts at 0x1000 */
-    . = 0x1000;
+    /* Load kernel at 1 MiB (traditional protected-mode kernel base). */
+    . = 0x00100000;
 
-    .text ALIGN(4) : {
+    /* Multiboot2 header must be in the first 32 KiB and 8-byte aligned. */
+    .multiboot ALIGN(8) : {
         *(.multiboot)
+    }
+
+    .text ALIGN(4096) : {
         *(.text)
     }
 
-    .rodata ALIGN(4) : { *(.rodata) }
+    .rodata ALIGN(4096) : { *(.rodata) }
 
-    .data ALIGN(4) : { *(.data) }
+    .data ALIGN(4096) : { *(.data) }
 
-    .bss ALIGN(4) : {
+    .bss ALIGN(4096) : {
         __bss_start = .;
         *(.bss)
         *(COMMON)
+
+        . = ALIGN(16);
+        stack_bottom = .;
+        . = . + 0x10000; /* 64 KiB stack */
+        stack_top = .;
+
         __bss_end = .;
     }
-
-    /* Reserve 64 KB for the stack at 0x90000 */
-    . = 0x90000;
-    stack_top = .;
-    . = . + 0x10000; /* 64 KB stack */
-    stack_bottom = .;
 }

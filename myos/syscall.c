@@ -17,11 +17,6 @@ static void sc_memcpy(void* dst, const void* src, int n) {
     const unsigned char* s = (const unsigned char*)src;
     for (int i = 0; i < n; i++) d[i] = s[i];
 }
-static int sc_strlen(const char* s) {
-    int n = 0;
-    while (s && s[n]) n++;
-    return n;
-}
 static void sc_memset(void* dst, unsigned char val, int n) {
     unsigned char* d = (unsigned char*)dst;
     for (int i = 0; i < n; i++) d[i] = val;

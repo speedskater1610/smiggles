@@ -103,21 +103,9 @@ int process_create(unsigned int entry_point) {
     return -1;
 }
 
-static unsigned int user_linux_int80_0(unsigned int nr) {
-    unsigned int ret;
-    asm volatile("int $0x80" : "=a"(ret) : "a"(nr) : "memory");
-    return ret;
-}
-
 static unsigned int user_linux_int80_1(unsigned int nr, unsigned int a0) {
     unsigned int ret;
     asm volatile("int $0x80" : "=a"(ret) : "a"(nr), "b"(a0) : "memory");
-    return ret;
-}
-
-static unsigned int user_linux_int80_3(unsigned int nr, unsigned int a0, unsigned int a1, unsigned int a2) {
-    unsigned int ret;
-    asm volatile("int $0x80" : "=a"(ret) : "a"(nr), "b"(a0), "c"(a1), "d"(a2) : "memory");
     return ret;
 }
 
