@@ -1,7 +1,7 @@
 ASM=nasm
 CC=i686-elf-gcc
 LD=i686-elf-ld
-QEMU=qemu-system-i386
+QEMU ?= $(shell command -v qemu-system-i386 2>/dev/null || command -v qemu-system-i386.exe 2>/dev/null || { [ -x "/c/Program Files/qemu/qemu-system-i386.exe" ] && echo /c/PROGRA~1/qemu/qemu-system-i386.exe; })
 HOST_UDP_PORT?=
 HOST_HTTP_PORT?=
 
@@ -13,7 +13,7 @@ ifneq ($(strip $(HOST_HTTP_PORT)),)
 QEMU_USERNET+=,hostfwd=tcp::$(HOST_HTTP_PORT)-:8080
 endif
 
-GRUB_MKRESCUE ?= $(shell command -v grub-mkrescue 2>/dev/null || command -v i686-elf-grub-mkrescue 2>/dev/null)
+GRUB_MKRESCUE ?= $(shell command -v grub-mkrescue 2>/dev/null || command -v i686-elf-grub-mkrescue 2>/dev/null || { [ -f ./grub-mkrescue ] && echo "bash ./grub-mkrescue"; })
 GRUB_FILE ?= $(shell command -v grub-file 2>/dev/null || command -v i686-elf-grub-file 2>/dev/null)
 
 CFLAGS=-ffreestanding -m32 -O2 -Wall -Wextra
@@ -131,7 +131,7 @@ hdd.img:
 	@if [ ! -f hdd.img ]; then qemu-img create -f raw hdd.img 10M; fi
 
 run: smiggles.iso hdd.img
-	$(QEMU) -drive file=smiggles.iso,media=cdrom,format=raw,if=none,id=cdrom -device ide-cd,drive=cdrom,bus=ide.1 \
+	"$(QEMU)" -drive file=smiggles.iso,media=cdrom,format=raw,if=none,id=cdrom -device ide-cd,drive=cdrom,bus=ide.1 \
 	      -drive file=hdd.img,format=raw,if=none,id=hdd -device ide-hd,drive=hdd,bus=ide.0 \
 	      -boot d -serial stdio -net nic,model=rtl8139 $(QEMU_USERNET)
 

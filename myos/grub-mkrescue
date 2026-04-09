@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Minimal grub-mkrescue shim for this project:
+# supports: grub-mkrescue -o <output.iso> <iso_dir>
+out_iso=""
+iso_dir=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o)
+      out_iso="${2:-}"
+      shift 2
+      ;;
+    --help|-h)
+      echo "usage: grub-mkrescue -o output.iso iso_dir"
+      exit 0
+      ;;
+    *)
+      iso_dir="$1"
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$out_iso" ] || [ -z "$iso_dir" ]; then
+  echo "usage: grub-mkrescue -o output.iso iso_dir" >&2
+  exit 2
+fi
+
+grub_mkimage="${GRUB_MKIMAGE:-/c/tools/grub-2.06-for-windows/grub-mkimage.exe}"
+
+if [ ! -x "$grub_mkimage" ]; then
+  echo "grub-mkimage not found at: $grub_mkimage" >&2
+  echo "Set GRUB_MKIMAGE to the full path if needed." >&2
+  exit 1
+fi
+
+grub_root="$(dirname "$grub_mkimage")"
+cdboot_img="$grub_root/i386-pc/cdboot.img"
+grub_mod_dir="$grub_root/i386-pc"
+
+if [ ! -f "$cdboot_img" ]; then
+  echo "cdboot.img not found at: $cdboot_img" >&2
+  echo "Expected GRUB i386-pc files next to grub-mkimage.exe" >&2
+  exit 1
+fi
+
+if [ ! -d "$grub_mod_dir" ]; then
+  echo "GRUB module directory not found: $grub_mod_dir" >&2
+  exit 1
+fi
+
+if command -v xorriso >/dev/null 2>&1; then
+  iso_tool="xorriso"
+elif [ -x "/c/msys64/usr/bin/xorriso.exe" ]; then
+  iso_tool="/c/msys64/usr/bin/xorriso.exe"
+else
+  echo "xorriso not found. Install it or add it to PATH." >&2
+  exit 1
+fi
+
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+
+mkdir -p "$iso_dir/boot/grub"
+mkdir -p "$iso_dir/boot/grub/i386-pc"
+
+# Provide runtime modules on the ISO where GRUB expects them.
+cp -a "$grub_mod_dir/." "$iso_dir/boot/grub/i386-pc/"
+
+cat > "$tmp_dir/early.cfg" <<'EOF'
+set prefix=($root)/boot/grub
+configfile /boot/grub/grub.cfg
+EOF
+
+"$grub_mkimage" -O i386-pc \
+  -o "$tmp_dir/core.img" \
+  -p /boot/grub \
+  -c "$tmp_dir/early.cfg" \
+  biosdisk iso9660 search search_fs_file normal configfile multiboot2
+
+cat "$cdboot_img" "$tmp_dir/core.img" > "$iso_dir/boot/grub/eltorito.img"
+
+"$iso_tool" -as mkisofs -R \
+  -b boot/grub/eltorito.img \
+  -c boot.catalog \
+  -no-emul-boot -boot-load-size 4 -boot-info-table \
+  -o "$out_iso" "$iso_dir" >/dev/null
