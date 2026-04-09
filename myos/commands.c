@@ -4608,108 +4608,68 @@ static void dispatch_command_internal(const char* cmd, char* video, int* cursor)
         handle_command(cmd, video, cursor, "about", "Smiggles OS is a lightweight operating system designed by Jules Miller and Vajra Vanukuri.", COLOR_LIGHT_GRAY);
     } else if (mini_strcmp(cmd, "help") == 0) {
         print_string(
-            "---Filesystem---\n"
-            "touch file.txt - create file\n"
-            "echo \"text\" > <file> - write to file\n"
-            "mkdir <path> - create directory\n"
+            "--- Commands ---\n"
+            "ls - list directory\n"
+            "cd <dir> - change directory\n"
+            "edit <file> - open text editor\n"
+            "cat <file> - read file\n"
+            "touch <file> - create file\n"
+            "mkdir <dir> - create directory\n"
             "rm <path> - remove file\n"
-            "rmdir <path> - remove directory\n"
-            "cat file.txt - read file \n"
-            "cp <location> <destination> - copy file\n"
-            "mv <old> <new> - rename/move file\n"
-            "grep <pattern> <file> - search in file\n"
-            "edit <file> - text editor \n"
-            "filesize <file> - show file size\n"
-            "hexdump <file> - show hexdump of file\n"
-            "chmod <file> - change file permissions with octal system\n",
-            -1, video, cursor, COLOR_YELLOW);
-
-        print_string(
-            "---System commands---\n"
-            "about - about Smiggles\n"
-            "ver - version info\n"
-            "uptime - system uptime\n"
-            "log - logger status and controls\n"
-            "log show [n] - show latest log entries\n"
-            "log level [name|0-3] - get/set log threshold\n"
-            "log clear - clear logger buffer\n"
-            "log test - write a test log entry\n"
-            "dmesg - shortcut for log show 25\n"
-            "neofetch - system info\n"
-            "basic - BASIC interpreter\n"
-            "exec <file.bas> - run BASIC file\n"
-            "fdtest <file> - fd syscall open/write/read test\n"
-            "spawn ring3 - run ring-3 Linux ABI smoke test\n"
-            "panic - show kernel panic screen\n"
+            "mv <old> <new> - move or rename\n"
+            "echo \"text\" > <file> - write file\n"
+            "clear - clear screen\n"
+            "time - show date/time\n"
+            "whoami - current user\n"
+            "login - log in\n"
+            "reboot - restart\n"
             "halt - shutdown\n"
-            "reboot - restart\n",
-            -1, video, cursor, COLOR_LIGHT_CYAN);
-
-        print_string(
-            "---Networking---\n"
-            "pciscan - detect RTL8139 on PCI bus\n"
-            "arp setip <a.b.c.d> - set local IP address\n"
-            "arp table - show ARP cache\n"
-            "ping <a.b.c.d> - send ICMP echo request\n"
-            "net pump <count> - drive network stack (poll N frames)\n"
-            "tcp listen <port>|off - set TCP listen port\n"
-            "tcp stats - show TCP connection counters\n"
-            "sock open udp - open a UDP socket\n"
-            "sock bind <fd> <port> - bind socket to port\n"
-            "sock send <fd> <ip> <port> <text> - send UDP packet\n"
-            "sock recv <fd> - receive on bound socket\n"
-            "sock close <fd> - close socket\n"
-            "sock list - list open sockets\n"
-            "udpecho start <port> - start UDP echo server\n"
-            "udpecho run <count> - pump echo server N steps\n"
-            "udpecho stop - stop UDP echo server\n",
-            -1, video, cursor, COLOR_LIGHT_MAGENTA);
-
-        print_string(
-            "---Package manager---\n"
-            "pkg repo <ip> <port> - set package repo\n"
-            "pkg search - list packages from repo\n"
-            "pkg install <name> [path] - install package from repo\n"
-            "pkg install <ip> <port> <name> [path] - legacy install form\n"
-            "pkg list - list installed packages\n"
-            "pkg remove <name> - uninstall package\n",
+            "\n"
+            "More: help net | help pkg | help admin | help dev",
             -1, video, cursor, COLOR_YELLOW);
-
+    } else if (mini_strcmp(cmd, "help net") == 0) {
         print_string(
-            "---User authentication---\n"
-            "whoami - view logged in user\n"
-            "login - log in with username/password\n"
-            "logout - log out\n"
-            "edituser - edit account information\n"
-            "adduser - add new user\n"
-            "deluser - delete user\n",
-            -1, video, cursor, COLOR_LIGHT_RED);
-        print_string(    
-            "---Group management---\n"
-            "creategroup <name> - create a new group (admin only)\n"
-            "delgroup <name> - delete a group (admin only)\n"
-            "listgroups - list all groups and bitmasks\n"
-            "lsgroup <mask|name> - list users in a group (hex, decimal, or name)\n"
-            "whois <username> - show user's group memberships\n"
-            "setgroups <username> <mask> - set user's group bitmask (admin only)\n"
-            "listusers - list all users\n"
-            "edituser - edit any account\n"
-            "chown <file> - change file owner\n",
+            "--- Networking ---\n"
+            "pciscan - detect RTL8139\n"
+            "arp setip <a.b.c.d> - set local IP\n"
+            "arp table - show ARP cache\n"
+            "ping <a.b.c.d> - ICMP echo\n"
+            "net pump <count> - poll network stack\n"
+            "tcp listen <port>|off|show - TCP listener\n"
+            "tcp stats - TCP counters\n"
+            "sock open udp|bind|send|recv|close|list - UDP socket tools\n"
+            "udpecho start|step|run|stop|status - UDP echo server",
+            -1, video, cursor, COLOR_LIGHT_MAGENTA);
+    } else if (mini_strcmp(cmd, "help pkg") == 0) {
+        print_string(
+            "--- Packages ---\n"
+            "pkg repo <ip> <port> - set repository\n"
+            "pkg search - list available packages\n"
+            "pkg install <name> [path] - install package\n"
+            "pkg list - list installed packages\n"
+            "pkg remove <name> - uninstall package",
+            -1, video, cursor, COLOR_LIGHT_CYAN);
+    } else if (mini_strcmp(cmd, "help admin") == 0) {
+        print_string(
+            "--- Users/Admin ---\n"
+            "whoami | login | logout\n"
+            "adduser | deluser | edituser\n"
+            "creategroup | delgroup | listgroups | lsgroup\n"
+            "whois <user> | setgroups <user> <mask>\n"
+            "chown <file>\n"
+            "tz show|set <zone>",
             -1, video, cursor, COLOR_LIGHT_GREEN);
+    } else if (mini_strcmp(cmd, "help dev") == 0) {
         print_string(
-            "---Log Commands---\n"
-            "log - shows the number of log entries\n"
-            "log show [count] - shows details for the latest log entries\n"
-            "log level [0-3] - 0 sets debug, 1 sets info, 2 sets warn, 3 sets error\n"
-            "log clear - clears the log entries\n"
-            "log test - create a test log entry\n",
+            "--- Dev/Debug ---\n"
+            "ver | uptime | neofetch\n"
+            "log | log show [n] | log level [name|0-3] | log clear | log test\n"
+            "dmesg - shortcut for log show 25\n"
+            "basic | exec <file.bas>\n"
+            "fdtest <file> | spawn ring3\n"
+            "free | df | fscheck\n"
+            "panic",
             -1, video, cursor, COLOR_LIGHT_BLUE);
-        print_string(
-            "---Timezones Commands---\n"
-            "tz | tz show - shows current timezone\n"
-            "tz show timezone - shows a list of all the timezones\n"
-            "tz set <timezone> - sets the timezone\n",
-            -1,video,cursor,COLOR_LIGHT_RED);
     
 
 
