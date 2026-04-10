@@ -7,11 +7,19 @@ int current_process = -1;
 static int demo_autorespawn = 0;
 static unsigned int kernel_idle_esp = 0;
 
+#define PAGE_SIZE_BYTES 4096u
+#define PAGE_FLAG_PRESENT 0x001u
+#define PAGE_ADDR_MASK 0xFFFFF000u
+
 static void process_demo_entry(void);
 static void process_entry_trampoline(void);
 static void ring3_demo_user_main(void);
 static void ring3_fault_user_main(void);
 static void process_release_resources(PCB* proc);
+
+static int process_alloc_kernel_stack_with_guard(unsigned int* out_guard_base,
+                                                 unsigned int* out_stack_base);
+static int process_unmap_guard_page(unsigned int page_directory, unsigned int guard_base);
 
 static void process_reap_exited(void) {
     for (int i = 0; i < MAX_PROCESSES; i++) {
@@ -33,7 +41,11 @@ static void process_release_resources(PCB* proc) {
         paging_destroy_process_directory(proc->page_directory);
         proc->page_directory = 0;
     }
-    if (proc->stack_base) {
+    if (proc->stack_guard_base) {
+        free_pages((void*)proc->stack_guard_base, 1u);
+        proc->stack_guard_base = 0;
+        proc->stack_base = 0;
+    } else if (proc->stack_base) {
         free_page((void*)proc->stack_base);
         proc->stack_base = 0;
     }
@@ -43,6 +55,32 @@ static void process_release_resources(PCB* proc) {
         proc->user_stack_base = 0;
     }
     proc->user_stack_size = 0;
+}
+
+static int process_alloc_kernel_stack_with_guard(unsigned int* out_guard_base,
+                                                 unsigned int* out_stack_base) {
+    if (!out_guard_base || !out_stack_base) return -1;
+
+    unsigned int block = (unsigned int)alloc_pages(1u); // 2 contiguous pages
+    if (!block) return -1;
+    *out_guard_base = block;
+    *out_stack_base = block + PAGE_SIZE_BYTES;
+    return 0;
+}
+
+static int process_unmap_guard_page(unsigned int page_directory, unsigned int guard_base) {
+    if (!page_directory || !guard_base) return -1;
+
+    uint32_t* pd = (uint32_t*)(uintptr_t)page_directory;
+    uint32_t pde_index = guard_base >> 22;
+    uint32_t pte_index = (guard_base >> 12) & 0x3FFu;
+
+    uint32_t pde = pd[pde_index];
+    if ((pde & PAGE_FLAG_PRESENT) == 0) return -1;
+
+    uint32_t* pt = (uint32_t*)(uintptr_t)(pde & PAGE_ADDR_MASK);
+    pt[pte_index] &= ~PAGE_FLAG_PRESENT;
+    return 0;
 }
 
 static int is_demo_process_active(void) {
@@ -77,6 +115,7 @@ void init_process_table() {
         process_table[i].page_directory = 0;
         process_table[i].esp = 0;
         process_table[i].eip = 0;
+        process_table[i].stack_guard_base = 0;
         process_table[i].stack_base = 0;
         process_table[i].stack_size = 0;
         process_table[i].user_stack_base = 0;
@@ -98,17 +137,37 @@ int process_create(unsigned int entry_point) {
             process_table[i].state = PROC_READY;
             process_table[i].name[0] = 0;
             process_table[i].eip = entry_point;
-            process_table[i].stack_size = 4096;
+            process_table[i].stack_size = PAGE_SIZE_BYTES;
+            process_table[i].stack_guard_base = 0;
             process_table[i].user_stack_base = 0;
             process_table[i].user_stack_size = 0;
-            void* stack = alloc_page();
-            if (!stack) return -1;
-            process_table[i].stack_base = (unsigned int)stack;
+
+            unsigned int guard_base = 0;
+            unsigned int stack_base = 0;
+            if (process_alloc_kernel_stack_with_guard(&guard_base, &stack_base) != 0) {
+                process_table[i].state = PROC_UNUSED;
+                return -1;
+            }
+            process_table[i].stack_guard_base = guard_base;
+            process_table[i].stack_base = stack_base;
 
             process_table[i].page_directory = paging_create_process_directory(0, 0, 0);
             if (!process_table[i].page_directory) {
-                free_page(stack);
+                free_pages((void*)process_table[i].stack_guard_base, 1u);
                 process_table[i].stack_base = 0;
+                process_table[i].stack_guard_base = 0;
+                process_table[i].stack_size = 0;
+                process_table[i].state = PROC_UNUSED;
+                return -1;
+            }
+
+            if (process_unmap_guard_page(process_table[i].page_directory,
+                                         process_table[i].stack_guard_base) != 0) {
+                paging_destroy_process_directory(process_table[i].page_directory);
+                free_pages((void*)process_table[i].stack_guard_base, 1u);
+                process_table[i].page_directory = 0;
+                process_table[i].stack_base = 0;
+                process_table[i].stack_guard_base = 0;
                 process_table[i].stack_size = 0;
                 process_table[i].state = PROC_UNUSED;
                 return -1;
@@ -312,6 +371,7 @@ int process_spawn_ring3_demo(void) {
 
     paging_destroy_process_directory(proc->page_directory);
     proc->page_directory = user_pd;
+    process_unmap_guard_page(proc->page_directory, proc->stack_guard_base);
     proc->user_stack_base = (unsigned int)user_stack;
     proc->user_stack_size = 4096;
 
@@ -342,6 +402,7 @@ int process_spawn_ring3_fault_demo(void) {
 
     paging_destroy_process_directory(proc->page_directory);
     proc->page_directory = user_pd;
+    process_unmap_guard_page(proc->page_directory, proc->stack_guard_base);
     proc->user_stack_base = (unsigned int)user_stack;
     proc->user_stack_size = 4096;
 

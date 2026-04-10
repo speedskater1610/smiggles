@@ -23,6 +23,12 @@
 #define PAGE_FLAG_USER     0x004u
 #define PAGE_ADDR_MASK     0xFFFFF000u
 
+#define MAX_BUDDY_ORDER    20u
+
+#define SLAB_MAGIC         0x514C4142u
+#define SLAB_FREE_NONE     0xFFFFu
+#define SLAB_CLASS_COUNT   7
+
 struct mb2_tag {
     uint32_t type;
     uint32_t size;
@@ -59,6 +65,34 @@ static uint32_t tracked_memory_top;
 static uint32_t* kernel_page_directory;
 static uint32_t mapped_pde_count;
 
+static int32_t buddy_free_head[MAX_BUDDY_ORDER + 1u];
+static int32_t buddy_next[MAX_TRACKED_FRAMES];
+static int32_t buddy_prev[MAX_TRACKED_FRAMES];
+static int8_t buddy_order_map[MAX_TRACKED_FRAMES];
+static uint8_t buddy_is_free[MAX_TRACKED_FRAMES];
+static uint32_t buddy_base_frame;
+static uint32_t buddy_total_frames;
+static uint32_t buddy_max_order;
+
+typedef struct {
+    uint32_t magic;
+    uint16_t class_idx;
+    uint16_t obj_size;
+    uint16_t capacity;
+    uint16_t free_count;
+    uint16_t free_head;
+    uint16_t reserved;
+    uint32_t next;
+} __attribute__((packed)) SlabPage;
+
+typedef struct {
+    uint16_t obj_size;
+    uint32_t head;
+} SlabClass;
+
+static SlabClass slab_classes[SLAB_CLASS_COUNT];
+static const uint16_t slab_sizes[SLAB_CLASS_COUNT] = {32u, 64u, 128u, 256u, 512u, 1024u, 2048u};
+
 extern uint8_t __bss_end;
 
 static inline void set_frame(uint32_t frame) {
@@ -89,6 +123,10 @@ static uint32_t align_up_u32(uint32_t value, uint32_t align) {
     return (value + align - 1u) & ~(align - 1u);
 }
 
+static uint32_t align_down_u32(uint32_t value, uint32_t align) {
+    return value & ~(align - 1u);
+}
+
 static void zero_page_u32(uint32_t* page_u32) {
     for (int i = 0; i < 1024; i++) {
         page_u32[i] = 0;
@@ -100,6 +138,169 @@ static uint32_t* alloc_zeroed_page(void) {
     if (!page) return 0;
     zero_page_u32(page);
     return page;
+}
+
+static void bitmap_mark_range(uint32_t start_frame, uint32_t count, int used) {
+    for (uint32_t i = 0; i < count; i++) {
+        if (used) set_frame(start_frame + i);
+        else clear_frame(start_frame + i);
+    }
+}
+
+static void buddy_list_push(uint32_t rel, uint32_t order) {
+    int32_t head = buddy_free_head[order];
+    buddy_next[rel] = head;
+    buddy_prev[rel] = -1;
+    if (head >= 0) buddy_prev[(uint32_t)head] = (int32_t)rel;
+    buddy_free_head[order] = (int32_t)rel;
+    buddy_order_map[rel] = (int8_t)order;
+    buddy_is_free[rel] = 1;
+}
+
+static void buddy_list_remove(uint32_t rel, uint32_t order) {
+    int32_t prev = buddy_prev[rel];
+    int32_t next = buddy_next[rel];
+    if (prev >= 0) buddy_next[(uint32_t)prev] = next;
+    else buddy_free_head[order] = next;
+    if (next >= 0) buddy_prev[(uint32_t)next] = prev;
+    buddy_next[rel] = -1;
+    buddy_prev[rel] = -1;
+    buddy_is_free[rel] = 0;
+}
+
+static uint32_t buddy_list_pop(uint32_t order, int* ok) {
+    int32_t head = buddy_free_head[order];
+    if (head < 0) {
+        *ok = 0;
+        return 0;
+    }
+    buddy_list_remove((uint32_t)head, order);
+    *ok = 1;
+    return (uint32_t)head;
+}
+
+static void buddy_free_block(uint32_t rel, uint32_t order) {
+    uint32_t block = rel;
+    uint32_t cur_order = order;
+
+    while (cur_order < buddy_max_order) {
+        uint32_t buddy = block ^ (1u << cur_order);
+        if (buddy >= buddy_total_frames) break;
+        if (!buddy_is_free[buddy]) break;
+        if ((uint32_t)buddy_order_map[buddy] != cur_order) break;
+
+        buddy_list_remove(buddy, cur_order);
+        if (buddy < block) block = buddy;
+        cur_order++;
+    }
+
+    buddy_list_push(block, cur_order);
+}
+
+static int buddy_alloc_block(uint32_t order, uint32_t* out_rel) {
+    if (order > buddy_max_order) return -1;
+
+    uint32_t found = order;
+    int ok = 0;
+    while (found <= buddy_max_order) {
+        if (buddy_free_head[found] >= 0) {
+            ok = 1;
+            break;
+        }
+        found++;
+    }
+    if (!ok) return -1;
+
+    uint32_t rel = buddy_list_pop(found, &ok);
+    if (!ok) return -1;
+
+    while (found > order) {
+        found--;
+        uint32_t split = rel + (1u << found);
+        buddy_list_push(split, found);
+    }
+
+    buddy_order_map[rel] = (int8_t)order;
+    buddy_is_free[rel] = 0;
+    *out_rel = rel;
+    return 0;
+}
+
+static void init_buddy_allocator(void) {
+    for (uint32_t i = 0; i <= MAX_BUDDY_ORDER; i++) {
+        buddy_free_head[i] = -1;
+    }
+
+    buddy_base_frame = FIRST_MANAGED_FRAME;
+    if (total_frames <= buddy_base_frame) {
+        buddy_total_frames = 0;
+        buddy_max_order = 0;
+        return;
+    }
+
+    buddy_total_frames = total_frames - buddy_base_frame;
+    buddy_max_order = 0;
+    while (buddy_max_order < MAX_BUDDY_ORDER &&
+           (1u << (buddy_max_order + 1u)) <= buddy_total_frames) {
+        buddy_max_order++;
+    }
+
+    for (uint32_t i = 0; i < buddy_total_frames; i++) {
+        buddy_next[i] = -1;
+        buddy_prev[i] = -1;
+        buddy_order_map[i] = -1;
+        buddy_is_free[i] = 0;
+    }
+
+    for (uint32_t rel = 0; rel < buddy_total_frames; rel++) {
+        uint32_t frame = buddy_base_frame + rel;
+        if (!frame_is_set(frame)) {
+            buddy_free_block(rel, 0);
+        }
+    }
+}
+
+static void slab_init(void) {
+    for (uint32_t i = 0; i < SLAB_CLASS_COUNT; i++) {
+        slab_classes[i].obj_size = slab_sizes[i];
+        slab_classes[i].head = 0;
+    }
+}
+
+static uint32_t slab_page_data_offset(void) {
+    return align_up_u32((uint32_t)sizeof(SlabPage), 8u);
+}
+
+static int slab_refill_class(uint32_t class_idx) {
+    void* page = alloc_page();
+    if (!page) return -1;
+
+    SlabPage* slab = (SlabPage*)page;
+    uint32_t data_off = slab_page_data_offset();
+    uint16_t obj_size = slab_classes[class_idx].obj_size;
+    uint16_t capacity = (uint16_t)((PAGE_SIZE - data_off) / obj_size);
+    if (capacity == 0) {
+        free_page(page);
+        return -1;
+    }
+
+    slab->magic = SLAB_MAGIC;
+    slab->class_idx = (uint16_t)class_idx;
+    slab->obj_size = obj_size;
+    slab->capacity = capacity;
+    slab->free_count = capacity;
+    slab->free_head = 0;
+    slab->reserved = 0;
+    slab->next = slab_classes[class_idx].head;
+
+    uint8_t* base = (uint8_t*)page + data_off;
+    for (uint16_t i = 0; i < capacity; i++) {
+        uint16_t* next_idx = (uint16_t*)(base + (uint32_t)i * obj_size);
+        *next_idx = (i + 1u < capacity) ? (uint16_t)(i + 1u) : SLAB_FREE_NONE;
+    }
+
+    slab_classes[class_idx].head = (uint32_t)(uintptr_t)page;
+    return 0;
 }
 
 static void clear_usable_range(uint64_t start, uint64_t end) {
@@ -195,17 +396,7 @@ static int parse_multiboot2_mmap(uint32_t mb_magic, uint32_t mb_info_addr) {
     return found_mmap;
 }
 
-// Find the first free physical frame at or above FIRST_MANAGED_FRAME.
-static int first_free_frame(void) {
-    for (uint32_t frame = FIRST_MANAGED_FRAME; frame < total_frames; frame++) {
-        if (!frame_is_set(frame)) {
-            return (int)frame;
-        }
-    }
-    return -1;
-}
-
-// Initialize the simple frame allocator.
+// Initialize frame bitmap state from multiboot memory map and reserved ranges.
 static void init_frame_allocator(uint32_t mb_magic, uint32_t mb_info_addr) {
     int has_mmap = parse_multiboot2_mmap(mb_magic, mb_info_addr);
     total_frames = tracked_memory_top / PAGE_SIZE;
@@ -308,23 +499,118 @@ static int mark_user_page(uint32_t* pd, uint32_t vaddr) {
 // Public API: allocate one 4KiB physical page, returned as a kernel virtual
 // address (identity-mapped).
 void* alloc_page(void) {
-    int frame = first_free_frame();
-    if (frame < 0) {
-        return 0;
-    }
-    set_frame((uint32_t)frame);
-    uint32_t phys = (uint32_t)frame * PAGE_SIZE;
+    uint32_t rel = 0;
+    if (buddy_alloc_block(0, &rel) != 0) return 0;
+
+    uint32_t frame = buddy_base_frame + rel;
+    bitmap_mark_range(frame, 1u, 1);
+    uint32_t phys = frame * PAGE_SIZE;
     return (void*)phys;
+}
+
+void* alloc_pages(unsigned int order) {
+    uint32_t ord = order;
+    uint32_t rel = 0;
+    if (buddy_alloc_block(ord, &rel) != 0) return 0;
+
+    uint32_t frame = buddy_base_frame + rel;
+    uint32_t count = 1u << ord;
+    bitmap_mark_range(frame, count, 1);
+    return (void*)(uintptr_t)(frame * PAGE_SIZE);
 }
 
 // Public API: free a previously allocated 4KiB page.
 void free_page(void* addr) {
+    free_pages(addr, 0u);
+}
+
+void free_pages(void* addr, unsigned int order) {
     uint32_t phys = (uint32_t)addr;
     if (phys < FIRST_MANAGED_PHYS || phys >= tracked_memory_top) {
         return;
     }
+    if ((phys & (PAGE_SIZE - 1u)) != 0u) return;
+
     uint32_t frame = phys / PAGE_SIZE;
-    clear_frame(frame);
+    if (frame < buddy_base_frame) return;
+
+    uint32_t rel = frame - buddy_base_frame;
+    uint32_t count = 1u << order;
+    if (rel + count > buddy_total_frames) return;
+
+    bitmap_mark_range(frame, count, 0);
+    buddy_free_block(rel, order);
+}
+
+void* kmalloc(unsigned int size) {
+    if (size == 0u) return 0;
+
+    uint32_t class_idx = SLAB_CLASS_COUNT;
+    for (uint32_t i = 0; i < SLAB_CLASS_COUNT; i++) {
+        if (size <= slab_classes[i].obj_size) {
+            class_idx = i;
+            break;
+        }
+    }
+
+    if (class_idx == SLAB_CLASS_COUNT) {
+        if (size > PAGE_SIZE) return 0;
+        return alloc_page();
+    }
+
+    uint32_t page_addr = slab_classes[class_idx].head;
+    SlabPage* slab = 0;
+    while (page_addr) {
+        slab = (SlabPage*)(uintptr_t)page_addr;
+        if (slab->magic == SLAB_MAGIC && slab->free_count > 0) break;
+        page_addr = slab->next;
+        slab = 0;
+    }
+
+    if (!slab) {
+        if (slab_refill_class(class_idx) != 0) return 0;
+        slab = (SlabPage*)(uintptr_t)slab_classes[class_idx].head;
+    }
+
+    if (slab->free_head == SLAB_FREE_NONE) return 0;
+    uint16_t idx = slab->free_head;
+    uint32_t data_off = slab_page_data_offset();
+    uint8_t* base = (uint8_t*)slab + data_off;
+    uint8_t* obj = base + (uint32_t)idx * slab->obj_size;
+    uint16_t* next_idx = (uint16_t*)obj;
+    slab->free_head = *next_idx;
+    slab->free_count--;
+    return (void*)obj;
+}
+
+void kfree(void* ptr) {
+    if (!ptr) return;
+
+    uint32_t addr = (uint32_t)(uintptr_t)ptr;
+    uint32_t page_base = align_down_u32(addr, PAGE_SIZE);
+    SlabPage* slab = (SlabPage*)(uintptr_t)page_base;
+
+    if (slab->magic == SLAB_MAGIC) {
+        uint32_t data_off = slab_page_data_offset();
+        uint32_t data_start = page_base + data_off;
+        uint32_t data_end = page_base + PAGE_SIZE;
+        if (addr >= data_start && addr < data_end && slab->obj_size != 0) {
+            uint32_t rel = addr - data_start;
+            if ((rel % slab->obj_size) != 0) return;
+            uint16_t idx = (uint16_t)(rel / slab->obj_size);
+            if (idx >= slab->capacity) return;
+
+            uint16_t* slot = (uint16_t*)(uintptr_t)addr;
+            *slot = slab->free_head;
+            slab->free_head = idx;
+            if (slab->free_count < slab->capacity) slab->free_count++;
+            return;
+        }
+    }
+
+    if ((addr & (PAGE_SIZE - 1u)) == 0u) {
+        free_page(ptr);
+    }
 }
 
 unsigned int paging_get_kernel_directory(void) {
@@ -392,6 +678,8 @@ void paging_switch_directory(unsigned int page_directory) {
 // Initialize paging with identity-mapped 4 KiB pages up to tracked_memory_top.
 void init_paging(uint32_t mb_magic, uint32_t mb_info_addr) {
     init_frame_allocator(mb_magic, mb_info_addr);
+    init_buddy_allocator();
+    slab_init();
 
     kernel_page_directory = alloc_zeroed_page();
     if (!kernel_page_directory) {

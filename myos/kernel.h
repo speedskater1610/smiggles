@@ -90,6 +90,7 @@ typedef struct {
     unsigned int page_directory;
     unsigned int esp;
     unsigned int eip;
+    unsigned int stack_guard_base;
     unsigned int stack_base;
     unsigned int stack_size;
     unsigned int user_stack_base;
@@ -323,7 +324,11 @@ typedef struct {
 // Memory management
 void init_paging(uint32_t mb_magic, uint32_t mb_info_addr);
 void* alloc_page(void);
+void* alloc_pages(unsigned int order);
 void free_page(void* addr);
+void free_pages(void* addr, unsigned int order);
+void* kmalloc(unsigned int size);
+void kfree(void* ptr);
 unsigned int paging_get_kernel_directory(void);
 unsigned int paging_create_process_directory(unsigned int user_code_addr,
                                              unsigned int user_stack_base,
