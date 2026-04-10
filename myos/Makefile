@@ -6,11 +6,12 @@ HOST_UDP_PORT?=
 HOST_HTTP_PORT?=
 
 QEMU_USERNET=-net user
+QEMU_USERNET_EXTRA=
 ifneq ($(strip $(HOST_UDP_PORT)),)
-QEMU_USERNET+=,hostfwd=udp::$(HOST_UDP_PORT)-:5555
+QEMU_USERNET_EXTRA+=,hostfwd=udp::$(HOST_UDP_PORT)-:5555
 endif
 ifneq ($(strip $(HOST_HTTP_PORT)),)
-QEMU_USERNET+=,hostfwd=tcp::$(HOST_HTTP_PORT)-:8080
+QEMU_USERNET_EXTRA+=,hostfwd=tcp::$(HOST_HTTP_PORT)-:8080
 endif
 
 GRUB_MKRESCUE ?= $(shell command -v grub-mkrescue 2>/dev/null || command -v i686-elf-grub-mkrescue 2>/dev/null || { [ -f ./grub-mkrescue ] && echo "bash ./grub-mkrescue"; })
@@ -133,7 +134,7 @@ hdd.img:
 run: smiggles.iso hdd.img
 	"$(QEMU)" -drive file=smiggles.iso,media=cdrom,format=raw,if=none,id=cdrom -device ide-cd,drive=cdrom,bus=ide.1 \
 	      -drive file=hdd.img,format=raw,if=none,id=hdd -device ide-hd,drive=hdd,bus=ide.0 \
-	      -boot d -serial stdio -net nic,model=rtl8139 $(QEMU_USERNET)
+	      -boot d -serial stdio -net nic,model=rtl8139 $(QEMU_USERNET)$(QEMU_USERNET_EXTRA)
 
 clean:
 	rm -f *.o *.bin *.elf *.img *.iso qemu*.log

@@ -562,6 +562,7 @@ void kernel_main(unsigned int mb_magic, unsigned int mb_info_addr) {
     idt_ptr.base = (unsigned int)&idt;
     load_idt(&idt_ptr);
     mouse_init();
+    rtl8139_init();
     char* video = (char*)0xB8000;
     int cursor = 0;
     int line_start = 0;

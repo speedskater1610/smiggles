@@ -237,21 +237,20 @@ void scroll_screen(char* video) {
 }
 
 void print_smiggles_art(char* video, int* cursor) {
-    const char* smiggles_art[7] = {
-        " _______  __   __  ___   _______  _______  ___      _______  _______ ",
-        "|       ||  |_|  ||   | |       ||       ||   |    |       ||       |",
-        "|  _____||       ||   | |    ___||    ___||   |    |    ___||  _____|",
-        "| |_____ |       ||   | |   | __ |   | __ |   |    |   |___ | |_____ ",
-        "|_____  ||       ||   | |   ||  ||   ||  ||   |___ |    ___||_____  |",
-        " _____| || ||_|| ||   | |   |_| ||   |_| ||       ||   |___  _____| |",
-        "|_______||_|   |_||___| |_______||_______||_______||_______||_______|"
+    const char* smiggles_art[6] = {
+        "               _             _           ",
+        " ___ _ __ ___ (_) __ _  __ _| | ___  ___ ",
+        "/ __| '_ ` _ \\| |/ _` |/ _` | |/ _ \\/ __|",
+        "\\__ \\ | | | | | | (_| | (_| | |  __/\\__ \\",
+        "|___/_| |_| |_|_|\\__, |\\__, |_|\\___||___/",
+        "                 |___/ |___/             "
     };
-    unsigned char rainbow[7] = {0x0E, 0x0E, 0x0E, 0x0E, 0x0E, 0x0E, 0x0E};
-    int art_lines = 7;
+    unsigned char rainbow[3] = {COLOR_LIGHT_RED, COLOR_LIGHT_BLUE, COLOR_WHITE};
+    int art_lines = 6;
     for (int l = 0; l < art_lines; l++) {
         for (int j = 0; smiggles_art[l][j] && j < 80; j++) {
             video[(l*80+j)*2] = smiggles_art[l][j];
-            video[(l*80+j)*2+1] = rainbow[j % 7];
+            video[(l*80+j)*2+1] = COLOR_GREEN;
         }
     }
     *cursor = art_lines * 80;

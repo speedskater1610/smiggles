@@ -40,7 +40,7 @@ static void handle_filesize_command(const char* filename, char* video, int* curs
     int_to_str(node_table[node_idx].content_size, temp);
     str_concat(buf, temp);
     str_concat(buf, " bytes");
-    print_string(buf, -1, video, cursor, COLOR_LIGHT_CYAN);
+    print_string(buf, -1, video, cursor, COLOR_LIGHT_GRAY);
 }
 
 // --- Global Variables ---
@@ -797,7 +797,7 @@ static void handle_lsall_command(char* video, int* cursor) {
 static void handle_cat_command(const char* filename, char* video, int* cursor, unsigned char color_unused) {
     (void)color_unused;
     if ((!filename || filename[0] == 0) && shell_stdin_data) {
-        print_string(shell_stdin_data, shell_stdin_len, video, cursor, COLOR_LIGHT_CYAN);
+        print_string(shell_stdin_data, shell_stdin_len, video, cursor, COLOR_LIGHT_GRAY);
         return;
     }
 
@@ -836,7 +836,7 @@ static void handle_cat_command(const char* filename, char* video, int* cursor, u
         print_string("Permission denied.", -1, video, cursor, COLOR_LIGHT_RED);
         return;
     }
-    print_string(node_table[node_idx].content, node_table[node_idx].content_size, video, cursor, COLOR_LIGHT_CYAN);
+    print_string(node_table[node_idx].content, node_table[node_idx].content_size, video, cursor, COLOR_LIGHT_GRAY);
 }
 
 static void handle_echo_command(const char* text, const char* filename, char* video, int* cursor, unsigned char color_unused) {
@@ -1329,7 +1329,7 @@ static void handle_log_command(const char* args, char* video, int* cursor) {
         str_concat(line, "Logger level: ");
         str_concat(line, log_level_name(current_level));
         str_concat(line, " (0=debug..3=error)");
-        print_string(line, -1, video, cursor, COLOR_LIGHT_CYAN);
+        print_string(line, -1, video, cursor, COLOR_LIGHT_GRAY);
 
         line[0] = 0;
         str_concat(line, "Buffered entries: ");
@@ -1338,7 +1338,7 @@ static void handle_log_command(const char* args, char* video, int* cursor) {
             int_to_str(total, value);
         }
         str_concat(line, value);
-        print_string(line, -1, video, cursor, COLOR_LIGHT_CYAN);
+        print_string(line, -1, video, cursor, COLOR_LIGHT_GRAY);
 
         print_string("Usage: log show [count] | log level [name|0-3] | log clear", -1, video, cursor, COLOR_YELLOW);
         return;
@@ -1367,7 +1367,7 @@ static void handle_log_command(const char* args, char* video, int* cursor) {
             line[0] = 0;
             str_concat(line, "Logger level: ");
             str_concat(line, log_level_name(current_level));
-            print_string(line, -1, video, cursor, COLOR_LIGHT_CYAN);
+            print_string(line, -1, video, cursor, COLOR_LIGHT_GRAY);
             return;
         }
 
@@ -1831,7 +1831,7 @@ static void pkg_print_repo(char* video, int* cursor) {
     str_concat(line, ":");
     int_to_str(port, port_text);
     str_concat(line, port_text);
-    print_string(line, -1, video, cursor, COLOR_LIGHT_CYAN);
+    print_string(line, -1, video, cursor, COLOR_LIGHT_GRAY);
 }
 
 static void handle_pkg_repo_command(const char* args, char* video, int* cursor) {
@@ -2116,7 +2116,7 @@ static void handle_pkg_list_command(char* video, int* cursor) {
         while (db[i] == '\n') i++;
 
         if (line[0]) {
-            print_string(line, -1, video, cursor, COLOR_LIGHT_CYAN);
+            print_string(line, -1, video, cursor, COLOR_LIGHT_GRAY);
             count++;
         }
     }
@@ -2177,7 +2177,7 @@ static void handle_pkg_search_command(char* video, int* cursor) {
         line[li] = 0;
         while (i < payload_len && payload[i] != '\n' && payload[i] != '\r') i++;
         if (line[0]) {
-            print_string(line, -1, video, cursor, COLOR_LIGHT_CYAN);
+            print_string(line, -1, video, cursor, COLOR_LIGHT_GRAY);
             printed++;
         }
     }
@@ -2363,7 +2363,7 @@ static void handle_wait_command(const char* arg, char* video, int* cursor) {
 }
 
 static void handle_ps_command(char* video, int* cursor) {
-    print_string("PID NAME   STATE    RUN   WORK", -1, video, cursor, COLOR_LIGHT_CYAN);
+    print_string("PID NAME   STATE    RUN   WORK", -1, video, cursor, COLOR_LIGHT_GRAY);
 
     for (int i = 0; i < MAX_PROCESSES; i++) {
         PCB* proc = &process_table[i];
@@ -3623,7 +3623,7 @@ static void dispatch_command_internal(const char* cmd, char* video, int* cursor)
     } else if (cmd[0] == 't' && cmd[1] == 'o' && cmd[2] == 'u' && cmd[3] == 'c' && cmd[4] == 'h' && cmd[5] == ' ') {
         handle_touch_command(cmd + 6, video, cursor);
     } else if (cmd[0] == 'c' && cmd[1] == 'a' && cmd[2] == 't' && cmd[3] == ' ') {
-        handle_cat_command(cmd + 4, video, cursor, 0x0E);
+        handle_cat_command(cmd + 4, video, cursor, COLOR_LIGHT_GRAY);
     } else if (cmd[0] == 'r' && cmd[1] == 'm' && cmd[2] == 'd' && cmd[3] == 'i' && cmd[4] == 'r' && cmd[5] == ' ') {
         handle_rmdir_command(cmd + 6, video, cursor);
     } else if (cmd[0] == 'r' && cmd[1] == 'm' && cmd[2] == ' ') {
@@ -3791,7 +3791,7 @@ static void dispatch_command_internal(const char* cmd, char* video, int* cursor)
                 value[p++] = hex[(mac[5] >> 4) & 0x0F]; value[p++] = hex[mac[5] & 0x0F]; value[p++] = 0;
 
                 str_concat(line, value);
-                print_string(line, -1, video, cursor, COLOR_LIGHT_CYAN);
+                print_string(line, -1, video, cursor, COLOR_LIGHT_GRAY);
             }
         }
     } else if (cmd[0] == 'a' && cmd[1] == 'r' && cmd[2] == 'p' && cmd[3] == ' ' && cmd[4] == 's' && cmd[5] == 'e' && cmd[6] == 't' && cmd[7] == 'i' && cmd[8] == 'p' && cmd[9] == ' ') {
@@ -3914,7 +3914,7 @@ static void dispatch_command_internal(const char* cmd, char* video, int* cursor)
             int_to_str(stats.last_ttl, value); str_concat(line, value);
             str_concat(line, " len=");
             int_to_str(stats.last_total_length, value); str_concat(line, value);
-            print_string(line, -1, video, cursor, COLOR_LIGHT_CYAN);
+            print_string(line, -1, video, cursor, COLOR_LIGHT_GRAY);
         } else if (r == 2) {
             print_string("IP: non-IPv4 frame ignored", -1, video, cursor, COLOR_YELLOW);
         } else {
@@ -4128,7 +4128,7 @@ static void dispatch_command_internal(const char* cmd, char* video, int* cursor)
         int_to_str((int)dst_port, value); str_concat(line, value);
         str_concat(line, " len=");
         int_to_str(payload_len, value); str_concat(line, value);
-        print_string(line, -1, video, cursor, COLOR_LIGHT_CYAN);
+        print_string(line, -1, video, cursor, COLOR_LIGHT_GRAY);
 
         for (int k = 0; k < payload_len; k++) {
             if (payload[k] < 32 || payload[k] > 126) payload[k] = '.';
@@ -4222,7 +4222,7 @@ static void dispatch_command_internal(const char* cmd, char* video, int* cursor)
         int_to_str(no_data, value); str_concat(line, value);
         str_concat(line, " err=");
         int_to_str(errors, value); str_concat(line, value);
-        print_string(line, -1, video, cursor, COLOR_LIGHT_CYAN);
+        print_string(line, -1, video, cursor, COLOR_LIGHT_GREEN);
     } else if (mini_strcmp(cmd, "tcp poll") == 0) {
         int r = tcp_poll_once();
         if (r == 0) {
@@ -4291,7 +4291,7 @@ static void dispatch_command_internal(const char* cmd, char* video, int* cursor)
         int_to_str((int)stats.tcp_seen, value); str_concat(line, value);
         str_concat(line, " err=");
         int_to_str((int)stats.parse_errors, value); str_concat(line, value);
-        print_string(line, -1, video, cursor, COLOR_LIGHT_GRAY);
+        print_string(line, -1, video, cursor, COLOR_LIGHT_GREEN);
 
         line[0] = 0;
         str_concat(line, "TCP syn=");
@@ -4302,7 +4302,7 @@ static void dispatch_command_internal(const char* cmd, char* video, int* cursor)
         int_to_str((int)stats.established, value); str_concat(line, value);
         str_concat(line, " ack=");
         int_to_str((int)stats.ack_sent, value); str_concat(line, value);
-        print_string(line, -1, video, cursor, COLOR_LIGHT_GRAY);
+        print_string(line, -1, video, cursor, COLOR_LIGHT_GREEN);
 
         line[0] = 0;
         str_concat(line, "TCP listen=");
@@ -4312,7 +4312,7 @@ static void dispatch_command_internal(const char* cmd, char* video, int* cursor)
         } else {
             str_concat(line, "off");
         }
-        print_string(line, -1, video, cursor, COLOR_LIGHT_GRAY);
+        print_string(line, -1, video, cursor, COLOR_LIGHT_GREEN);
     } else if (mini_strcmp(cmd, "tcp conns") == 0) {
         int count = tcp_get_conn_count();
         char line[128];
@@ -4346,7 +4346,7 @@ static void dispatch_command_internal(const char* cmd, char* video, int* cursor)
             int_to_str((int)info.dst_port, value); str_concat(line, value);
             str_concat(line, " ");
             str_concat(line, state);
-            print_string(line, -1, video, cursor, COLOR_LIGHT_CYAN);
+            print_string(line, -1, video, cursor, COLOR_LIGHT_GREEN);
         }
     } else if (mini_strcmp(cmd, "tcp") == 0) {
         print_string("TCP usage: tcp listen|poll|stats|conns", -1, video, cursor, COLOR_YELLOW);
@@ -4464,7 +4464,7 @@ static void dispatch_command_internal(const char* cmd, char* video, int* cursor)
         int_to_str((int)src_port, value); str_concat(line, value);
         str_concat(line, " len=");
         int_to_str(payload_len, value); str_concat(line, value);
-        print_string(line, -1, video, cursor, COLOR_LIGHT_CYAN);
+        print_string(line, -1, video, cursor, COLOR_LIGHT_GRAY);
 
         for (int n = 0; n < payload_len; n++) {
             if (payload[n] < 32 || payload[n] > 126) payload[n] = '.';
@@ -4496,7 +4496,7 @@ static void dispatch_command_internal(const char* cmd, char* video, int* cursor)
             str_concat(line, info.type == SOCK_TYPE_UDP ? "UDP" : "?");
             str_concat(line, " local=");
             int_to_str((int)info.local_port, value); str_concat(line, value);
-            print_string(line, -1, video, cursor, COLOR_LIGHT_CYAN);
+            print_string(line, -1, video, cursor, COLOR_LIGHT_GRAY);
         }
     } else if (mini_strcmp(cmd, "sock") == 0) {
         print_string("SOCK usage: sock open udp|bind|send|recv|close|list", -1, video, cursor, COLOR_YELLOW);
@@ -4565,7 +4565,7 @@ static void dispatch_command_internal(const char* cmd, char* video, int* cursor)
         str_concat(line, "UDPECHO: echoed ");
         int_to_str(echoed, value); str_concat(line, value);
         str_concat(line, " packets");
-        print_string(line, -1, video, cursor, COLOR_LIGHT_CYAN);
+        print_string(line, -1, video, cursor, COLOR_LIGHT_GRAY);
     } else if (mini_strcmp(cmd, "udpecho stop") == 0) {
         if (udpecho_fd >= 0) {
             sock_close(udpecho_fd);
@@ -4626,7 +4626,7 @@ static void dispatch_command_internal(const char* cmd, char* video, int* cursor)
             "halt - shutdown\n"
             "\n"
             "More: help net | help pkg | help admin | help dev",
-            -1, video, cursor, COLOR_YELLOW);
+            -1, video, cursor, COLOR_LIGHT_GRAY);
     } else if (mini_strcmp(cmd, "help net") == 0) {
         print_string(
             "--- Networking ---\n"
@@ -4639,7 +4639,7 @@ static void dispatch_command_internal(const char* cmd, char* video, int* cursor)
             "tcp stats - TCP counters\n"
             "sock open udp|bind|send|recv|close|list - UDP socket tools\n"
             "udpecho start|step|run|stop|status - UDP echo server",
-            -1, video, cursor, COLOR_LIGHT_MAGENTA);
+            -1, video, cursor, COLOR_LIGHT_GRAY);
     } else if (mini_strcmp(cmd, "help pkg") == 0) {
         print_string(
             "--- Packages ---\n"
@@ -4648,7 +4648,7 @@ static void dispatch_command_internal(const char* cmd, char* video, int* cursor)
             "pkg install <name> [path] - install package\n"
             "pkg list - list installed packages\n"
             "pkg remove <name> - uninstall package",
-            -1, video, cursor, COLOR_LIGHT_CYAN);
+            -1, video, cursor, COLOR_LIGHT_GRAY);
     } else if (mini_strcmp(cmd, "help admin") == 0) {
         print_string(
             "--- Users/Admin ---\n"
@@ -4658,7 +4658,7 @@ static void dispatch_command_internal(const char* cmd, char* video, int* cursor)
             "whois <user> | setgroups <user> <mask>\n"
             "chown <file>\n"
             "tz show|set <zone>",
-            -1, video, cursor, COLOR_LIGHT_GREEN);
+            -1, video, cursor, COLOR_LIGHT_GRAY);
     } else if (mini_strcmp(cmd, "help dev") == 0) {
         print_string(
             "--- Dev/Debug ---\n"
@@ -4669,7 +4669,7 @@ static void dispatch_command_internal(const char* cmd, char* video, int* cursor)
             "fdtest <file> | spawn ring3\n"
             "free | df | fscheck\n"
             "panic",
-            -1, video, cursor, COLOR_LIGHT_BLUE);
+            -1, video, cursor, COLOR_LIGHT_GRAY);
     
 
 
