@@ -18,6 +18,11 @@
 
 #define PAGE_4M_SIZE       (4u * 1024u * 1024u)
 
+#define PAGE_FLAG_PRESENT  0x001u
+#define PAGE_FLAG_RW       0x002u
+#define PAGE_FLAG_USER     0x004u
+#define PAGE_ADDR_MASK     0xFFFFF000u
+
 struct mb2_tag {
     uint32_t type;
     uint32_t size;
@@ -50,8 +55,9 @@ static uint32_t total_frames;
 static uint32_t bitmap_words;
 static uint32_t tracked_memory_top;
 
-// Page directory for 4 MiB pages (PSE).
-static uint32_t page_directory[1024] __attribute__((aligned(4096)));
+// Kernel master page directory and tracked mapped PDE count.
+static uint32_t* kernel_page_directory;
+static uint32_t mapped_pde_count;
 
 extern uint8_t __bss_end;
 
@@ -81,6 +87,19 @@ static inline int frame_is_set(uint32_t frame) {
 
 static uint32_t align_up_u32(uint32_t value, uint32_t align) {
     return (value + align - 1u) & ~(align - 1u);
+}
+
+static void zero_page_u32(uint32_t* page_u32) {
+    for (int i = 0; i < 1024; i++) {
+        page_u32[i] = 0;
+    }
+}
+
+static uint32_t* alloc_zeroed_page(void) {
+    uint32_t* page = (uint32_t*)alloc_page();
+    if (!page) return 0;
+    zero_page_u32(page);
+    return page;
 }
 
 static void clear_usable_range(uint64_t start, uint64_t end) {
@@ -260,6 +279,32 @@ static void init_frame_allocator(uint32_t mb_magic, uint32_t mb_info_addr) {
     }
 }
 
+static void destroy_process_directory_internal(uint32_t* pd) {
+    if (!pd) return;
+    for (uint32_t i = 0; i < mapped_pde_count; i++) {
+        if ((pd[i] & PAGE_FLAG_PRESENT) == 0) continue;
+        uint32_t* pt = (uint32_t*)(uintptr_t)(pd[i] & PAGE_ADDR_MASK);
+        free_page((void*)pt);
+    }
+    free_page((void*)pd);
+}
+
+static int mark_user_page(uint32_t* pd, uint32_t vaddr) {
+    uint32_t pde_index = vaddr >> 22;
+    if (pde_index >= mapped_pde_count) return -1;
+
+    uint32_t pde = pd[pde_index];
+    if ((pde & PAGE_FLAG_PRESENT) == 0) return -1;
+
+    uint32_t* pt = (uint32_t*)(uintptr_t)(pde & PAGE_ADDR_MASK);
+    uint32_t pte_index = (vaddr >> 12) & 0x3FFu;
+    if ((pt[pte_index] & PAGE_FLAG_PRESENT) == 0) return -1;
+
+    pt[pte_index] |= PAGE_FLAG_USER;
+    pd[pde_index] |= PAGE_FLAG_USER;
+    return 0;
+}
+
 // Public API: allocate one 4KiB physical page, returned as a kernel virtual
 // address (identity-mapped).
 void* alloc_page(void) {
@@ -282,30 +327,105 @@ void free_page(void* addr) {
     clear_frame(frame);
 }
 
-// Initialize paging with identity-mapped 4 MiB pages up to tracked_memory_top.
+unsigned int paging_get_kernel_directory(void) {
+    return (unsigned int)(uintptr_t)kernel_page_directory;
+}
+
+unsigned int paging_create_process_directory(unsigned int user_code_addr,
+                                             unsigned int user_stack_base,
+                                             unsigned int user_stack_size) {
+    if (!kernel_page_directory || mapped_pde_count == 0) {
+        return 0;
+    }
+
+    uint32_t* pd = alloc_zeroed_page();
+    if (!pd) return 0;
+
+    for (uint32_t i = 0; i < mapped_pde_count; i++) {
+        if ((kernel_page_directory[i] & PAGE_FLAG_PRESENT) == 0) continue;
+
+        uint32_t* src_pt = (uint32_t*)(uintptr_t)(kernel_page_directory[i] & PAGE_ADDR_MASK);
+        uint32_t* dst_pt = alloc_zeroed_page();
+        if (!dst_pt) {
+            destroy_process_directory_internal(pd);
+            return 0;
+        }
+
+        for (int j = 0; j < 1024; j++) {
+            dst_pt[j] = src_pt[j] & ~PAGE_FLAG_USER;
+        }
+
+        pd[i] = ((unsigned int)(uintptr_t)dst_pt) | PAGE_FLAG_PRESENT | PAGE_FLAG_RW;
+    }
+
+    if (user_code_addr != 0u && mark_user_page(pd, user_code_addr) != 0) {
+        destroy_process_directory_internal(pd);
+        return 0;
+    }
+
+    if (user_stack_base != 0u && user_stack_size != 0u) {
+        uint32_t start = user_stack_base & ~(PAGE_SIZE - 1u);
+        uint32_t end = align_up_u32(user_stack_base + user_stack_size, PAGE_SIZE);
+        for (uint32_t addr = start; addr < end; addr += PAGE_SIZE) {
+            if (mark_user_page(pd, addr) != 0) {
+                destroy_process_directory_internal(pd);
+                return 0;
+            }
+        }
+    }
+
+    return (unsigned int)(uintptr_t)pd;
+}
+
+void paging_destroy_process_directory(unsigned int page_directory) {
+    uint32_t* pd = (uint32_t*)(uintptr_t)page_directory;
+    if (!pd) return;
+    if (pd == kernel_page_directory) return;
+    destroy_process_directory_internal(pd);
+}
+
+void paging_switch_directory(unsigned int page_directory) {
+    if (page_directory == 0u) return;
+    asm volatile("mov %0, %%cr3" : : "r"(page_directory) : "memory");
+}
+
+// Initialize paging with identity-mapped 4 KiB pages up to tracked_memory_top.
 void init_paging(uint32_t mb_magic, uint32_t mb_info_addr) {
     init_frame_allocator(mb_magic, mb_info_addr);
 
-    for (int i = 0; i < 1024; i++) {
-        page_directory[i] = 0;
+    kernel_page_directory = alloc_zeroed_page();
+    if (!kernel_page_directory) {
+        while (1) { }
     }
 
-    uint32_t num_4m_pages = (tracked_memory_top + PAGE_4M_SIZE - 1u) / PAGE_4M_SIZE;
-    if (num_4m_pages > 1024u) num_4m_pages = 1024u;
+    mapped_pde_count = (tracked_memory_top + PAGE_4M_SIZE - 1u) / PAGE_4M_SIZE;
+    if (mapped_pde_count > 1024u) mapped_pde_count = 1024u;
 
-    for (uint32_t i = 0; i < num_4m_pages; i++) {
+    for (uint32_t i = 0; i < mapped_pde_count; i++) {
+        uint32_t* page_table = alloc_zeroed_page();
+        if (!page_table) {
+            while (1) { }
+        }
+
         uint32_t base = i * PAGE_4M_SIZE;
-        // Present | RW | USER | 4MiB page (PS)
-        page_directory[i] = base | 0x87u;
+        for (uint32_t j = 0; j < 1024; j++) {
+            uint32_t phys = base + (j * PAGE_SIZE);
+            if (phys >= tracked_memory_top) break;
+            // Present | RW (supervisor-only)
+            page_table[j] = phys | PAGE_FLAG_PRESENT | PAGE_FLAG_RW;
+        }
+
+        // Present | RW (supervisor-only)
+        kernel_page_directory[i] = ((unsigned int)(uintptr_t)page_table) | PAGE_FLAG_PRESENT | PAGE_FLAG_RW;
     }
 
-    // Enable 4 MiB pages (CR4.PSE).
+    // Ensure classic 4 KiB paging mode.
     uint32_t cr4;
     asm volatile("mov %%cr4, %0" : "=r"(cr4));
-    cr4 |= 0x10u;
+    cr4 &= ~0x10u;
     asm volatile("mov %0, %%cr4" : : "r"(cr4));
 
-    uint32_t pd_phys = (uint32_t)page_directory;
+    uint32_t pd_phys = (uint32_t)(uintptr_t)kernel_page_directory;
     asm volatile("mov %0, %%cr3" : : "r"(pd_phys));
 
     uint32_t cr0;

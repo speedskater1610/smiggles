@@ -138,13 +138,13 @@ load_idt:
     ret
 
 ; ── Real cooperative context switch ────────────────────────────────────────
-; void context_switch_asm(uint32_t *save_esp, uint32_t load_esp)
+; void context_switch_asm(uint32_t *save_esp, uint32_t load_esp, uint32_t load_cr3)
 ; Saves edi/esi/ebx/ebp/eflags onto the current stack, records ESP in
 ; *save_esp, then loads load_esp and restores the new process's frame.
 ; A freshly created process has a pre-built frame (see process_create).
 [GLOBAL context_switch_asm]
 context_switch_asm:
-    ; Stack at entry: [esp+0]=retaddr [esp+4]=save_esp* [esp+8]=load_esp
+    ; Stack at entry: [esp+0]=retaddr [esp+4]=save_esp* [esp+8]=load_esp [esp+12]=load_cr3
     pushfd
     push ebp
     push ebx
@@ -152,9 +152,11 @@ context_switch_asm:
     push edi
     ; Stack now:  [esp+0]=edi [esp+4]=esi [esp+8]=ebx [esp+12]=ebp
     ;             [esp+16]=eflags [esp+20]=retaddr
-    ;             [esp+24]=save_esp* [esp+28]=load_esp
+    ;             [esp+24]=save_esp* [esp+28]=load_esp [esp+32]=load_cr3
     mov eax, [esp+24]        ; eax = save_esp pointer
     mov [eax], esp           ; *save_esp = current kernel stack
+    mov eax, [esp+32]
+    mov cr3, eax             ; switch address space
     mov esp, [esp+28]        ; switch to new process kernel stack
     pop edi
     pop esi

@@ -245,7 +245,6 @@ void print_smiggles_art(char* video, int* cursor) {
         "|___/_| |_| |_|_|\\__, |\\__, |_|\\___||___/",
         "                 |___/ |___/             "
     };
-    unsigned char rainbow[3] = {COLOR_LIGHT_RED, COLOR_LIGHT_BLUE, COLOR_WHITE};
     int art_lines = 6;
     for (int l = 0; l < art_lines; l++) {
         for (int j = 0; smiggles_art[l][j] && j < 80; j++) {

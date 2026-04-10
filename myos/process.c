@@ -10,13 +10,18 @@ static unsigned int kernel_idle_esp = 0;
 static void process_demo_entry(void);
 static void process_entry_trampoline(void);
 static void ring3_demo_user_main(void);
+static void ring3_fault_user_main(void);
 static void process_release_resources(PCB* proc);
 
 static void process_reap_exited(void) {
     for (int i = 0; i < MAX_PROCESSES; i++) {
         if (i == current_process) continue;
         if (process_table[i].state != PROC_EXITED) continue;
-        if (process_table[i].stack_base == 0) continue;
+        if (process_table[i].stack_base == 0 &&
+            process_table[i].user_stack_base == 0 &&
+            process_table[i].page_directory == 0) {
+            continue;
+        }
         process_release_resources(&process_table[i]);
     }
 }
@@ -24,11 +29,20 @@ static void process_reap_exited(void) {
 static void process_release_resources(PCB* proc) {
     if (!proc) return;
     fs_fd_close_for_pid(proc->pid);
+    if (proc->page_directory) {
+        paging_destroy_process_directory(proc->page_directory);
+        proc->page_directory = 0;
+    }
     if (proc->stack_base) {
         free_page((void*)proc->stack_base);
         proc->stack_base = 0;
     }
     proc->stack_size = 0;
+    if (proc->user_stack_base) {
+        free_page((void*)proc->user_stack_base);
+        proc->user_stack_base = 0;
+    }
+    proc->user_stack_size = 0;
 }
 
 static int is_demo_process_active(void) {
@@ -60,10 +74,13 @@ void init_process_table() {
         process_table[i].pid = i;
         process_table[i].state = PROC_UNUSED;
         process_table[i].name[0] = 0;
+        process_table[i].page_directory = 0;
         process_table[i].esp = 0;
         process_table[i].eip = 0;
         process_table[i].stack_base = 0;
         process_table[i].stack_size = 0;
+        process_table[i].user_stack_base = 0;
+        process_table[i].user_stack_size = 0;
         process_table[i].run_ticks = 0;
         for (int r = 0; r < 8; r++) process_table[i].regs[r] = 0;
     }
@@ -82,9 +99,20 @@ int process_create(unsigned int entry_point) {
             process_table[i].name[0] = 0;
             process_table[i].eip = entry_point;
             process_table[i].stack_size = 4096;
+            process_table[i].user_stack_base = 0;
+            process_table[i].user_stack_size = 0;
             void* stack = alloc_page();
             if (!stack) return -1;
             process_table[i].stack_base = (unsigned int)stack;
+
+            process_table[i].page_directory = paging_create_process_directory(0, 0, 0);
+            if (!process_table[i].page_directory) {
+                free_page(stack);
+                process_table[i].stack_base = 0;
+                process_table[i].stack_size = 0;
+                process_table[i].state = PROC_UNUSED;
+                return -1;
+            }
 
             unsigned int* sp = (unsigned int*)(process_table[i].stack_base
                                                + process_table[i].stack_size);
@@ -114,6 +142,13 @@ static void ring3_demo_user_main(void) {
     while (1) { }
 }
 
+static void ring3_fault_user_main(void) {
+    volatile unsigned int* kernel_ptr = (volatile unsigned int*)0x00100000u;
+    *kernel_ptr = 0xC0DEC0DEu;
+    user_linux_int80_1(LINUX_SYS_EXIT, 0u);
+    while (1) { }
+}
+
 static void process_entry_trampoline(void) {
     if (current_process < 0 || current_process >= MAX_PROCESSES) {
         while (1) { }
@@ -123,7 +158,7 @@ static void process_entry_trampoline(void) {
     void (*entry)(void) = (void (*)(void))proc->eip;
 
     if (proc->regs[7]) {
-        unsigned int user_esp = proc->stack_base + proc->stack_size - 256;
+        unsigned int user_esp = proc->user_stack_base + proc->user_stack_size - 16;
         jump_to_ring3(proc->eip, user_esp);
         while (1) { }
     }
@@ -153,9 +188,11 @@ void context_switch(int from_pid, int to_pid) {
         from->state = PROC_READY;
     to->state       = PROC_RUNNING;
     current_process = to_pid;
+    protection_set_kernel_stack(to->stack_base + to->stack_size);
 
     unsigned int* save_ptr = from ? &from->esp : &kernel_idle_esp;
-    context_switch_asm(save_ptr, to->esp);
+    unsigned int to_cr3 = to->page_directory ? to->page_directory : paging_get_kernel_directory();
+    context_switch_asm(save_ptr, to->esp, to_cr3);
     // Execution continues here when from_pid is scheduled again
 }
 
@@ -186,7 +223,8 @@ void schedule(void) {
         PCB* from = &process_table[current_process];
         int old_pid = current_process;
         current_process = -1;
-        context_switch_asm(&from->esp, kernel_idle_esp);
+        protection_set_kernel_stack(0x90000);
+        context_switch_asm(&from->esp, kernel_idle_esp, paging_get_kernel_directory());
         // resumes here when this process is scheduled again
         current_process = old_pid;
     }
@@ -256,7 +294,58 @@ int process_spawn_ring3_demo(void) {
     int pid = process_create((unsigned int)ring3_demo_user_main);
     if (pid < 0) return pid;
     PCB* proc = &process_table[pid];
+
+    void* user_stack = alloc_page();
+    if (!user_stack) {
+        process_kill(pid);
+        return -1;
+    }
+
+    unsigned int user_pd = paging_create_process_directory(proc->eip,
+                                                           (unsigned int)user_stack,
+                                                           4096);
+    if (!user_pd) {
+        free_page(user_stack);
+        process_kill(pid);
+        return -1;
+    }
+
+    paging_destroy_process_directory(proc->page_directory);
+    proc->page_directory = user_pd;
+    proc->user_stack_base = (unsigned int)user_stack;
+    proc->user_stack_size = 4096;
+
     str_copy(proc->name, "ring3", (int)sizeof(proc->name));
+    proc->regs[7] = 1;
+    return pid;
+}
+
+int process_spawn_ring3_fault_demo(void) {
+    int pid = process_create((unsigned int)ring3_fault_user_main);
+    if (pid < 0) return pid;
+    PCB* proc = &process_table[pid];
+
+    void* user_stack = alloc_page();
+    if (!user_stack) {
+        process_kill(pid);
+        return -1;
+    }
+
+    unsigned int user_pd = paging_create_process_directory(proc->eip,
+                                                           (unsigned int)user_stack,
+                                                           4096);
+    if (!user_pd) {
+        free_page(user_stack);
+        process_kill(pid);
+        return -1;
+    }
+
+    paging_destroy_process_directory(proc->page_directory);
+    proc->page_directory = user_pd;
+    proc->user_stack_base = (unsigned int)user_stack;
+    proc->user_stack_size = 4096;
+
+    str_copy(proc->name, "ring3pf", (int)sizeof(proc->name));
     proc->regs[7] = 1;
     return pid;
 }

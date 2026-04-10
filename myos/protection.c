@@ -104,6 +104,10 @@ int protection_is_ready(void) {
     return protection_ready;
 }
 
+void protection_set_kernel_stack(unsigned int kernel_esp0) {
+    tss.esp0 = kernel_esp0;
+}
+
 unsigned int protection_get_cpl(void) {
     unsigned int cs = 0;
     asm volatile("mov %%cs, %0" : "=r"(cs));

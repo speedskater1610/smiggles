@@ -2265,6 +2265,18 @@ static int udpecho_step_once(char* video, int* cursor) {
 static void handle_spawn_command(const char* arg, char* video, int* cursor) {
     while (*arg == ' ') arg++;
 
+    if (arg[0] == 'r' && arg[1] == 'i' && arg[2] == 'n' && arg[3] == 'g' && arg[4] == '3' &&
+        arg[5] == 'p' && arg[6] == 'f' && arg[7] == 0) {
+        int pid = process_spawn_ring3_fault_demo();
+        if (pid < 0) {
+            print_string("Failed to spawn ring3 fault-test process", -1, video, cursor, COLOR_LIGHT_RED);
+            return;
+        }
+        print_string("Spawned ring3 fault-test process", -1, video, cursor, COLOR_YELLOW);
+        schedule();
+        return;
+    }
+
     if (arg[0] == 'r' && arg[1] == 'i' && arg[2] == 'n' && arg[3] == 'g' && arg[4] == '3' && arg[5] == 0) {
         int pid = process_spawn_ring3_demo();
         if (pid < 0) {
@@ -2277,7 +2289,7 @@ static void handle_spawn_command(const char* arg, char* video, int* cursor) {
     }
 
     if (!(arg[0] == 'd' && arg[1] == 'e' && arg[2] == 'm' && arg[3] == 'o' && (arg[4] == 0 || arg[4] == ' '))) {
-        print_string("Usage: spawn demo [count|auto on|auto off] | spawn ring3", -1, video, cursor, COLOR_LIGHT_RED);
+        print_string("Usage: spawn demo [count|auto on|auto off] | spawn ring3 | spawn ring3pf", -1, video, cursor, COLOR_LIGHT_RED);
         return;
     }
 

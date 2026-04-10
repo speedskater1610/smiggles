@@ -87,10 +87,13 @@ typedef struct {
     int pid;
     ProcessState state;
     char name[16];
+    unsigned int page_directory;
     unsigned int esp;
     unsigned int eip;
     unsigned int stack_base;
     unsigned int stack_size;
+    unsigned int user_stack_base;
+    unsigned int user_stack_size;
     unsigned int run_ticks;
     unsigned int regs[8];
 } PCB;
@@ -122,6 +125,9 @@ int process_spawn_demo_with_work(unsigned int work_ticks);
 
 // Spawn a user-mode (ring-3) Linux-ABI smoke-test process
 int process_spawn_ring3_demo(void);
+
+// Spawn a ring-3 process that intentionally faults on kernel-memory access.
+int process_spawn_ring3_fault_demo(void);
 
 // Kill process by pid
 int process_kill(int pid);
@@ -318,6 +324,12 @@ typedef struct {
 void init_paging(uint32_t mb_magic, uint32_t mb_info_addr);
 void* alloc_page(void);
 void free_page(void* addr);
+unsigned int paging_get_kernel_directory(void);
+unsigned int paging_create_process_directory(unsigned int user_code_addr,
+                                             unsigned int user_stack_base,
+                                             unsigned int user_stack_size);
+void paging_destroy_process_directory(unsigned int page_directory);
+void paging_switch_directory(unsigned int page_directory);
 
 // Protection (GDT/TSS/Ring setup)
 void init_protection(void);
@@ -557,7 +569,12 @@ int net_poll_once(void);
 // Saves edi/esi/ebx/ebp/eflags on the current stack, stores ESP in
 // *save_esp, loads load_esp, restores the saved frame and returns into
 // the new process.  Used by context_switch() in process.c.
-extern void context_switch_asm(unsigned int* save_esp, unsigned int load_esp);
+extern void context_switch_asm(unsigned int* save_esp,
+                               unsigned int load_esp,
+                               unsigned int load_cr3);
+
+// Set TSS.esp0 for ring transitions into kernel mode.
+void protection_set_kernel_stack(unsigned int kernel_esp0);
 
 // Drop CPU into CPL=3 (ring 3) at entry:user_esp via iretd.
 // GDT must have user code (0x18) and user data (0x20) descriptors.
