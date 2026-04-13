@@ -2,15 +2,14 @@ ASM = nasm
 CC  = i686-elf-gcc
 LD  = i686-elf-ld
 
-CFLAGS  = -ffreestanding -m32 -O2 -Wall -Wextra
+CFLAGS  = -ffreestanding -m32 -O2 -Wall -Wextra -MMD -MP
 LDFLAGS = -T linker.ld -nostdlib
 
-# Auto-detect tools
 QEMU ?= $(shell command -v qemu-system-i386 2>/dev/null || command -v qemu-system-i386.exe 2>/dev/null)
 GRUB_MKRESCUE ?= $(shell command -v grub-mkrescue 2>/dev/null || command -v i686-elf-grub-mkrescue 2>/dev/null)
 GRUB_FILE ?= $(shell command -v grub-file 2>/dev/null || command -v i686-elf-grub-file 2>/dev/null)
 
-# Source files
+# Sources
 C_SOURCES = \
 	kernel.c interrupts.c memory.c filesystem.c display.c \
 	calculator.c basic.c editor.c commands.c clipboard.c \
@@ -20,20 +19,22 @@ C_SOURCES = \
 
 ASM_SOURCES = kernel_entry.asm
 
-# Object files (auto-generated)
+# Objects
 OBJS = $(C_SOURCES:.c=.o) $(ASM_SOURCES:.asm=.o)
 
-# Default target
+# Dependency files (.d)
+DEPS = $(C_SOURCES:.c=.d)
+
 all: smiggles.iso hdd.img
 
-# Pattern rules (THIS is the big improvement)
+# Pattern rules
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 %.o: %.asm
 	$(ASM) -f elf32 $< -o $@
 
-# Link kernel
+# Link
 kernel.elf: $(OBJS) linker.ld
 	$(LD) $(LDFLAGS) $(OBJS) -o $@
 	@if [ -n "$(GRUB_FILE)" ]; then \
@@ -45,17 +46,17 @@ iso/boot/grub/grub.cfg:
 	mkdir -p iso/boot/grub
 	printf 'set timeout=0\nset default=0\nterminal_output console\ninsmod multiboot2\nmultiboot2 /boot/kernel.elf\nboot\n' > $@
 
-# ISO build
+# ISO
 smiggles.iso: kernel.elf iso/boot/grub/grub.cfg
 	mkdir -p iso/boot
 	cp kernel.elf iso/boot/kernel.elf
 	$(GRUB_MKRESCUE) -o $@ iso >/dev/null
 
-# HDD image
+# HDD
 hdd.img:
 	@if [ ! -f $@ ]; then qemu-img create -f raw $@ 10M; fi
 
-# Run in QEMU
+# Run
 run: smiggles.iso hdd.img
 	$(QEMU) \
 	-drive file=smiggles.iso,media=cdrom \
@@ -63,9 +64,11 @@ run: smiggles.iso hdd.img
 	-boot d -serial stdio \
 	-net nic,model=rtl8139 -net user
 
-# Cleanup
+# Clean
 clean:
-	rm -f *.o *.elf *.iso *.img
+	rm -f *.o *.d *.elf *.iso *.img
 	rm -rf iso
+
+-include $(DEPS)
 
 .PHONY: all run clean
